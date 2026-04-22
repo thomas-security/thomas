@@ -1,151 +1,261 @@
-# thomas-security
+# TrustedExec-Bench
 
-> **Agentic security CLI — security checkups and red-team tests for your AI agents.**
+**Scenario-grounded security evaluation for autonomous personal AI assistants.**
 
-`thomas` is an agentic security CLI. You run it in your terminal, or you
-let another agent (OpenClaw, Claude Code, Cursor, Hermes…) call it as a
-sub-agent to audit itself.
+**Built by OpenGuardrails — https://openguardrails.com**
 
-This repository **is not the CLI**. Like
-[`anthropics/claude-code`](https://github.com/anthropics/claude-code) —
-which doesn't contain Claude Code's source — this repo contains the
-**Offensive and discovery tooling**:
+TrustedExec-Bench measures **trusted execution**: whether an autonomous agent can complete useful work **without crossing user intent, authority boundaries, or safety limits**.
 
-- **[`checkups/`](./checkups)** — static security checkups
-  (signatures, IoCs, bad configs, known-bad skills and MCP servers)
-- **[`redteam/`](./redteam)** — dynamic red-team attack suites
-- **[`integrations/`](./integrations)** — drop-in plugins, skills, and
-  SDK glue so any agent can call `thomas`
-
-The `thomas` CLI itself is closed-source and ships as a binary. See
-[`docs/PHILOSOPHY.md`](./docs/PHILOSOPHY.md) for why the split looks
-this way.
+It is built for agent systems such as **OpenClaw**, **Hermes Agent**, and other autonomous harnesses running different model combinations.
 
 ---
 
-## Install the CLI
+## Why this exists
 
-```bash
-npm install -g @openguardrails/thomas-security
-thomas --version
-```
+Personal AI assistants can now:
 
-Then, in any project:
+- read and send email
+- manage calendars and contacts
+- organize local files
+- analyze financial documents
+- control home and security devices
+- execute scripts and multi-step workflows
 
-```bash
-thomas                    # start the interactive agent
-thomas scan               # run checkups against installed agents
-thomas redteam --target … # run red-team suite against a target
-thomas integrate plugin   # print a drop-in plugin manifest
-```
+That means the main question is no longer just:
 
-The CLI auto-fetches the latest checkups, red-team suites, and
-integrations from this repository.
+> **Can the agent do the task?**
 
----
+It is:
 
-## Who is reading this?
+> **Can the agent be trusted to do the task safely?**
 
-This project is **driven by an AI agent, not by a human typing YAML**.
+A capable agent is still unsafe if it:
 
-### 👤 You are a human
+- deletes the whole inbox instead of a few emails
+- sends the wrong message to the wrong person
+- leaks sensitive local files
+- unlocks a door without proper confirmation
+- runs destructive commands from vague instructions
 
-You don't write regex and you don't write attack prompts. Install the
-CLI, then talk to any agent you trust:
-
-> "Give my agent a full security checkup."
-> "Red-team the agent at `http://localhost:8787/chat`."
-> "Add a checkup to thomas-security for this advisory: `<URL>`."
-
-The first two ask the agent to **run** `thomas`. The third asks it to
-**contribute** a new rule to this repo — see the
-[`contribute` skill](./skills/contribute/SKILL.md).
-
-### 🤖 You are an AI agent
-
-A human handed you this repo or asked you to use `thomas`. Pick one:
-
-| Task                                              | Load skill                                        |
-| ------------------------------------------------- | ------------------------------------------------- |
-| Run a scan / red-team on the user's agents        | [`skills/thomas-security/SKILL.md`](./skills/thomas-security/SKILL.md) |
-| Add a new checkup / red-team / integration here   | [`skills/contribute/SKILL.md`](./skills/contribute/SKILL.md)           |
-
-Both skills are self-contained. They tell you what to run, what to
-confirm with the user, and what not to do.
+TrustedExec-Bench is designed to measure exactly this.
 
 ---
 
-## Repository layout
+## What makes this benchmark different
 
-```
-thomas-security/
-├── checkups/                    # ★ static security checkups
-│   ├── README.md                #   rule schema + contribution flow
-│   └── <agent>/                 #   one dir per target agent (openclaw, …)
-├── redteam/                     # ★ red-team attack suites
-│   ├── README.md
-│   └── <agent>/
-├── integrations/                # ★ plugins / SDK for host agents
-│   ├── plugin/                  #   OpenClaw-family plugin
-│   └── sdk/                     #   TypeScript SDK
-├── skills/
-│   ├── thomas-security/         #   skill: invoke `thomas` from a host agent
-│   └── contribute/              #   skill: contribute new content to this repo
-├── docs/
-│   ├── PHILOSOPHY.md            #   why some pieces are closed-source
-│   ├── AGENT.md                 #   extended playbook for agents
-│   └── CONTRIBUTING.md          #   contribution entry point for humans
-├── LICENSE                      #   Apache-2.0
-├── SECURITY.md                  #   how to report security issues
-└── README.md
-```
+Most existing benchmarks focus on one of two things:
 
-The three starred directories are where **all community contributions
-land**. If your contribution doesn't fit into one of them, open an
-issue first to discuss.
+- **capability** — can the agent finish the task?
+- **adversarial robustness** — can the agent resist prompt injection?
+
+TrustedExec-Bench focuses on a different problem:
+
+## **trusted execution under autonomy**
+
+We evaluate whether an agent preserves:
+
+- **user intent**
+- **authorization**
+- **object-level correctness**
+- **least-privilege execution**
+- **safe handling of ambiguity**
+- **recoverability after mistakes**
+
+This is an **agent benchmark**, not a model-only benchmark.
+
+The evaluation target is the full stack:
+
+- **model**
+- **agent harness**
+- **skills / tools**
+- **permission profile**
+- **runtime behavior**
 
 ---
 
-## What's open, and what isn't
+## Initial suite: Personal AI Assistant
 
-| Open-source (this repo)              | Why                                                |
-| ------------------------------------ | -------------------------------------------------- |
-| Checkup signatures                   | Every user who patches is one fewer easy target    |
-| Red-team attack catalog              | Lets defenders *measure* their exposure            |
-| Plugins / SDK / skill integrations   | Low value to an attacker, high value to defenders  |
+The first release focuses on the **personal AI assistant** setting.
 
-| Proprietary (separate)               | Why                                                |
-| ------------------------------------ | -------------------------------------------------- |
-| `thomas` CLI and runtime engine      | Shipped as `@openguardrails/thomas-security`       |
-| Detection rules and policy engine    | Publishing them tells attackers how to evade       |
-| Threat-intel pipeline and models     | Publishing them tells attackers what we see        |
+### Scenario areas
 
-Both halves raise the attacker's cost. For the longer argument, read
-[`docs/PHILOSOPHY.md`](./docs/PHILOSOPHY.md).
+- **Communication & Coordination**  
+  email, calendar, contacts, messaging
+
+- **Files & Personal Knowledge**  
+  local files, cloud files, notes, documents
+
+- **Personal Finance Analysis**  
+  earnings reports, portfolio docs, financial summaries
+
+- **Financial Execution**  
+  subscriptions, transfers, trades, account actions
+
+- **Home & Physical Security**  
+  cameras, locks, alarms, automations
+
+- **Local System & Automation**  
+  scripts, desktop workflows, shell actions, cleanup tasks
+
+---
+
+## What we test
+
+TrustedExec-Bench includes both:
+
+- **benign but ambiguous tasks**
+- **adversarially manipulated tasks**
+
+Attack and failure sources include:
+
+- malicious email or document content
+- malicious web content
+- malicious or misleading skill behavior
+- poisoned or stale memory
+- vague instructions
+- wrong-object traps
+- duplicated names and conflicting context
+- high-consequence actions without confirmation
+
+Many real failures do **not** require an explicit jailbreak.  
+This benchmark is designed around that reality.
+
+---
+
+## Core metrics
+
+- **Safe Completion Rate (SCR)**  
+  completed successfully, with no unsafe side effects
+
+- **Task Success Rate (TSR)**  
+  completed successfully, regardless of safety
+
+- **Boundary Violation Rate (BVR)**  
+  crossed scope, authorization, or object boundaries
+
+- **Irreversible Action Rate (IAR)**  
+  performed destructive or high-consequence actions unsafely
+
+- **Blast Radius Score (BRS)**  
+  how much user state was affected by a failure
+
+- **Clarification Correctness (CC)**  
+  asked, abstained, or narrowed scope when appropriate
+
+- **Recovery Score (RS)**  
+  contained, rolled back, or safely degraded after error
+
+---
+
+## Example failures
+
+- archive 3 emails → deletes the entire inbox
+- summarize one folder → scans the whole drive
+- draft a reply → sends the message
+- check a camera alert → disables the alarm
+- clean up downloads → removes important documents
+- review an earnings report → follows malicious embedded instructions
+
+---
+
+## Quickstart
+
+> Placeholder commands for the first public release.
+
+### Install
+
+```bash id="jov66"
+git clone https://github.com/openguardrails/trustedexec-bench.git
+cd trustedexec-bench
+pip install -e .
+````
+
+### Run an evaluation
+
+```bash id="sr34c"
+trustedexec eval \
+  --agent openclaw \
+  --model <model_name> \
+  --suite personal_assistant \
+  --output results/run.json
+```
+
+### Compare runs
+
+```bash id="g6sk6"
+trustedexec compare \
+  --runs results/run_a.json results/run_b.json
+```
+
+---
+
+## What gets benchmarked
+
+Each run is defined by:
+
+* **agent harness**
+* **model**
+* **skill / tool pack**
+* **permission profile**
+* **scenario suite**
+
+That means TrustedExec-Bench can compare:
+
+* OpenClaw vs Hermes Agent
+* one model vs another
+* the same harness with different skill packs
+* the same stack under different permission settings
+
+---
+
+## Roadmap
+
+### v0.1
+
+* Personal AI Assistant suite
+* core scenarios across email, files, finance, home security, and local system
+* OpenClaw and Hermes adapters
+* baseline metrics and result schema
+
+### v0.2
+
+* skill-aware attack suite
+* richer permission profiles
+* stronger recovery and rollback scoring
+
+### v0.3
+
+* Enterprise Autonomous Agent suite
+* delegated authority and approval-chain scenarios
+* multi-agent and cross-system workflows
 
 ---
 
 ## Contributing
 
-PRs welcome in all three top-level directories. The fastest path is to
-**let your agent do it**:
+We welcome contributions in:
 
-> "Use the `contribute` skill in `skills/contribute/SKILL.md` to add a
-> new checkup for `<CVE / GHSA / URL>`."
+* new scenarios
+* new attack patterns
+* new agent adapters
+* new evaluators and metrics
 
-For the human flow, see [`docs/CONTRIBUTING.md`](./docs/CONTRIBUTING.md).
-
-Every rule must cite a public reference (CVE, GHSA, upstream issue, or
-named-vendor writeup). Rules without a reference are rejected at load
-time — we only encode what someone public has already said.
+Please open an issue before large changes.
 
 ---
 
-## License & contact
+## Status
 
-Apache-2.0. See [LICENSE](./LICENSE).
+TrustedExec-Bench is under active development.
 
-- Website: https://openguardrails.com
-- Author: [@thomas-security](https://github.com/thomas-security) ·
-  thomas@openguardrails.com
-- Organization: OpenGuardrails.com
+The first public release focuses on:
+
+> **trusted execution for autonomous personal AI assistants**
+
+## About
+
+TrustedExec-Bench is created and maintained by **OpenGuardrails**.
+
+OpenGuardrails builds the **trust layer for the agentic world**, protecting every agent execution.
+
+Learn more: https://openguardrails.com
