@@ -1,0 +1,54 @@
+{
+  "name": "@openguardrails/thomas",
+  "version": "0.1.0",
+  "description": "Thomas is the plug-and-play model hub that connects your agents to your models, with security guardrails, quotas, fallback, and cost controls.",
+  "license": "AGPL-3.0-only",
+  "author": "OpenGuardrails",
+  "homepage": "https://github.com/openguardrails/thomas",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/openguardrails/thomas.git"
+  },
+  "bugs": {
+    "url": "https://github.com/openguardrails/thomas/issues"
+  },
+  "keywords": [
+    "ai",
+    "claude",
+    "claude-code",
+    "openai",
+    "codex",
+    "proxy",
+    "router",
+    "llm",
+    "anthropic",
+    "cli"
+  ],
+  "type": "module",
+  "bin": {
+    "thomas": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "bun build src/cli.ts --target=node --outfile=dist/cli.js --banner '#!/usr/bin/env node'",
+    "dev": "bun run src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build && bun test"
+  },
+  "files": [
+    "dist",
+    "skill",
+    "SKILL.md",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^20",
+    "typescript": "^5.6.0"
+  }
+}

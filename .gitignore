@@ -1,4 +1,12 @@
+node_modules
+dist
 .DS_Store
 *.log
 .env
 .env.local
+
+# Reference repos used during development; never commit these.
+references/
+
+# Release tarballs from `npm pack`.
+*.tgz

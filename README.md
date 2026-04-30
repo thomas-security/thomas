@@ -1,261 +1,127 @@
-# TrustedExecBench
+# Thomas
 
-**Scenario-grounded security evaluation for autonomous personal AI assistants.**
-
-**Built by OpenGuardrails — https://openguardrails.com**
-
-TrustedExecBench measures **trusted execution**: whether an autonomous agent can complete useful work **without crossing user intent, authority boundaries, or safety limits**.
-
-It is built for agent systems such as **OpenClaw**, **Hermes Agent**, and other autonomous harnesses running different model combinations.
+> **Use any model with any AI agent — safely.**
+>
+> Thomas is the plug-and-play model hub that connects your agents to your models, with security guardrails, quotas, fallback, and cost controls.
 
 ---
 
-## Why this exists
+## What it does
 
-Personal AI assistants can now:
+Thomas is the universal adapter between AI agents and model providers. Install it once, and any agent on your machine — Claude Code, Codex, OpenClaw, Hermes Agent — can talk to any provider — Anthropic, OpenAI, OpenRouter, Kimi, DeepSeek, Groq, or your own OpenAI-compatible endpoint — without editing each agent's own configuration.
 
-- read and send email
-- manage calendars and contacts
-- organize local files
-- analyze financial documents
-- control home and security devices
-- execute scripts and multi-step workflows
+Roadmap order: **connect → control → optimize → protect.**
 
-That means the main question is no longer just:
+| Stage | Capability | Status |
+| --- | --- | --- |
+| **connect** | Discover installed agents; route any agent to any provider; cross-protocol translation (Anthropic ↔ OpenAI) including streaming | ✅ v0.1.0 |
+| **control** | Per-agent quotas, allowed-models policies, audit log | 🚧 planned |
+| **optimize** | Multi-provider fallback on failure; cost-aware routing; latency-aware routing | 🚧 planned |
+| **protect** | Prompt-injection / PII / secret detection; tool-call guardrails | 💼 commercial (planned) |
 
-> **Can the agent do the task?**
+The open core is licensed under AGPL-3.0. Security and governance features will ship as a commercial add-on.
 
-It is:
+Audience: individual users, developers, solo and small teams. Not aimed at enterprise procurement.
 
-> **Can the agent be trusted to do the task safely?**
+## Why thomas
 
-A capable agent is still unsafe if it:
+| Approach | Problem |
+| --- | --- |
+| Manually edit each agent's config (`~/.claude/settings.json`, `~/.codex/auth.json`, …) | Brittle. Five agents = five drift surfaces. |
+| Use a profile-switcher that rewrites those configs | When you uninstall the switcher, the agent stays pointed at whatever it last wrote. |
+| Use a router that requires `ANTHROPIC_BASE_URL` exported into your shell | When the router stops, your agent breaks. |
+| **thomas** | Installs a transparent shim earlier in `PATH`. Original config is never touched. Uninstall thomas → shim disappears → every agent reverts. |
 
-- deletes the whole inbox instead of a few emails
-- sends the wrong message to the wrong person
-- leaks sensitive local files
-- unlocks a door without proper confirmation
-- runs destructive commands from vague instructions
+## Install
 
-TrustedExecBench is designed to measure exactly this.
-
----
-
-## What makes this benchmark different
-
-Most existing benchmarks focus on one of two things:
-
-- **capability** — can the agent finish the task?
-- **adversarial robustness** — can the agent resist prompt injection?
-
-TrustedExecBench focuses on a different problem:
-
-## **trusted execution under autonomy**
-
-We evaluate whether an agent preserves:
-
-- **user intent**
-- **authorization**
-- **object-level correctness**
-- **least-privilege execution**
-- **safe handling of ambiguity**
-- **recoverability after mistakes**
-
-This is an **agent benchmark**, not a model-only benchmark.
-
-The evaluation target is the full stack:
-
-- **model**
-- **agent harness**
-- **skills / tools**
-- **permission profile**
-- **runtime behavior**
-
----
-
-## Initial suite: Personal AI Assistant
-
-The first release focuses on the **personal AI assistant** setting.
-
-### Scenario areas
-
-- **Communication & Coordination**  
-  email, calendar, contacts, messaging
-
-- **Files & Personal Knowledge**  
-  local files, cloud files, notes, documents
-
-- **Personal Finance Analysis**  
-  earnings reports, portfolio docs, financial summaries
-
-- **Financial Execution**  
-  subscriptions, transfers, trades, account actions
-
-- **Home & Physical Security**  
-  cameras, locks, alarms, automations
-
-- **Local System & Automation**  
-  scripts, desktop workflows, shell actions, cleanup tasks
-
----
-
-## What we test
-
-TrustedExecBench includes both:
-
-- **benign but ambiguous tasks**
-- **adversarially manipulated tasks**
-
-Attack and failure sources include:
-
-- malicious email or document content
-- malicious web content
-- malicious or misleading skill behavior
-- poisoned or stale memory
-- vague instructions
-- wrong-object traps
-- duplicated names and conflicting context
-- high-consequence actions without confirmation
-
-Many real failures do **not** require an explicit jailbreak.  
-This benchmark is designed around that reality.
-
----
-
-## Core metrics
-
-- **Safe Completion Rate (SCR)**  
-  completed successfully, with no unsafe side effects
-
-- **Task Success Rate (TSR)**  
-  completed successfully, regardless of safety
-
-- **Boundary Violation Rate (BVR)**  
-  crossed scope, authorization, or object boundaries
-
-- **Irreversible Action Rate (IAR)**  
-  performed destructive or high-consequence actions unsafely
-
-- **Blast Radius Score (BRS)**  
-  how much user state was affected by a failure
-
-- **Clarification Correctness (CC)**  
-  asked, abstained, or narrowed scope when appropriate
-
-- **Recovery Score (RS)**  
-  contained, rolled back, or safely degraded after error
-
----
-
-## Example failures
-
-- archive 3 emails → deletes the entire inbox
-- summarize one folder → scans the whole drive
-- draft a reply → sends the message
-- check a camera alert → disables the alarm
-- clean up downloads → removes important documents
-- review an earnings report → follows malicious embedded instructions
-
----
-
-## Quickstart
-
-> Placeholder commands for the first public release.
-
-### Install
-
-```bash id="jov66"
-git clone https://github.com/openguardrails/TrustedExecBench.git
-cd TrustedExecBench
-pip install -e .
-````
-
-### Run an evaluation
-
-```bash id="sr34c"
-trustedexec eval \
-  --agent openclaw \
-  --model <model_name> \
-  --suite personal_assistant \
-  --output results/run.json
+```sh
+npm i -g @openguardrails/thomas
+thomas doctor
 ```
 
-### Compare runs
+Requires Node 20+.
 
-```bash id="g6sk6"
-trustedexec compare \
-  --runs results/run_a.json results/run_b.json
+## Quick start
+
+```sh
+# 1. See what agents and credentials you already have on the host
+thomas doctor
+
+# 2. Wire an agent through thomas (installs a transparent PATH shim)
+thomas connect claude-code
+
+# 3. Add a provider key (only if thomas didn't import one for you)
+thomas providers add openrouter sk-or-v1-...
+
+# 4. Switch which model that agent uses (without touching its own config)
+thomas route claude-code openrouter/anthropic/claude-sonnet-4.5
+
+# 5. See current state
+thomas list
+
+# 6. Optional: supervise the proxy with launchd / systemd so it survives reboot
+thomas daemon install
+
+# Revert at any time
+thomas disconnect claude-code
 ```
 
----
+After `thomas connect`, add `~/.thomas/bin` to your `PATH` (the command prints the exact line).
 
-## What gets benchmarked
+## Currently supported
 
-Each run is defined by:
+**Agents** (CLIs that thomas knows how to detect, import credentials from, and shim):
 
-* **agent harness**
-* **model**
-* **skill / tool pack**
-* **permission profile**
-* **scenario suite**
+- Claude Code
+- Codex CLI
+- OpenClaw
+- Hermes Agent
 
-That means TrustedExecBench can compare:
+**Providers** (built-in routing targets):
 
-* OpenClaw vs Hermes Agent
-* one model vs another
-* the same harness with different skill packs
-* the same stack under different permission settings
+- `anthropic` (Anthropic API)
+- `openai` (OpenAI API)
+- `openrouter`
+- `kimi` (Moonshot AI)
+- `deepseek`
+- `groq`
 
----
+Plus any OpenAI-compatible or Anthropic-compatible endpoint via `thomas providers register`.
 
-## Roadmap
+## Cross-protocol translation
 
-### v0.1
+Both directions of `/v1/messages` ↔ `/v1/chat/completions` are translated, including streaming SSE — so a Claude Code (Anthropic-shape) agent can talk to OpenRouter / Groq / Kimi (OpenAI-shape), and a Codex (OpenAI-shape) agent can talk to Anthropic. System prompts, tool definitions, tool calls, tool results, image inputs, stop reasons, and SSE events are all mapped.
 
-* Personal AI Assistant suite
-* core scenarios across email, files, finance, home security, and local system
-* OpenClaw and Hermes adapters
-* baseline metrics and result schema
+## Use the skill
 
-### v0.2
+This repo ships a `SKILL.md` in the root. AI agents that find this repo on GitHub can read it directly to drive thomas on a user's behalf.
 
-* skill-aware attack suite
-* richer permission profiles
-* stronger recovery and rollback scoring
+To install the skill into your local Claude Code skill directory:
 
-### v0.3
+```sh
+thomas skill install claude-code
+```
 
-* Enterprise Autonomous Agent suite
-* delegated authority and approval-chain scenarios
-* multi-agent and cross-system workflows
-
----
-
-## Contributing
-
-We welcome contributions in:
-
-* new scenarios
-* new attack patterns
-* new agent adapters
-* new evaluators and metrics
-
-Please open an issue before large changes.
-
----
+After this, your Claude Code session can answer "switch claude code to kimi" / "show me which agents are connected" autonomously.
 
 ## Status
 
-TrustedExecBench is under active development.
+**v0.1.0 — public alpha.** The connect/route stage of the roadmap is complete and tested. Quotas, fallback, cost-aware routing, and security guardrails are not yet implemented.
 
-The first public release focuses on:
+## License
 
-> **trusted execution for autonomous personal AI assistants**
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
 
-## About
+This means:
 
-TrustedExecBench is created and maintained by **OpenGuardrails**.
+- ✅ You can use, modify, and distribute this software
+- ✅ You can use it for commercial purposes
+- ⚠️ **You must disclose source code** when you distribute the software
+- ⚠️ **Network use is distribution** — if you run a modified version on a server and let others interact with it, you must make the source code available to them
+- ⚠️ Modifications must be released under the same license
 
-OpenGuardrails builds the **trust layer for the agentic world**, protecting every agent execution.
+See the [LICENSE](LICENSE) file for the full license text.
 
-Learn more: https://openguardrails.com
+### Why AGPL-3.0?
+
+AGPL-3.0 ensures that improvements to this software benefit the entire community. If you modify thomas and deploy it as a service, you must share your improvements with your users. Commercial security and governance features will ship under a separate license.
