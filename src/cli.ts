@@ -17,7 +17,7 @@ import { skillInstall, skillRemove } from "./commands/skill.js";
 
 const VERSION = "0.1.0";
 
-const HELP = `thomas v${VERSION} — unified model proxy for AI agents
+const HELP = `thomas v${VERSION} — Universal adapter between AI agents and model providers
 
 Usage:
   thomas doctor                       Discover installed agents and credentials

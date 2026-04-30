@@ -95,7 +95,7 @@ export function renderSystemdUnit(p: {
   ]);
   const log = escapeIni(`${p.homeDir}/.thomas/proxy.log`);
   return `[Unit]
-Description=Thomas — unified model proxy for AI agents
+Description=Thomas — Universal adapter between AI agents and model providers
 After=network.target
 
 [Service]

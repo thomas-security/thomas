@@ -1,6 +1,6 @@
 ---
 name: thomas
-description: Unified model proxy for AI agents. Use thomas to discover installed AI agents on a host, wire them through a local proxy, and switch which model provider any agent uses without editing the agent's own config.
+description: Universal adapter between AI agents and model providers. Use thomas to discover installed AI agents on a host, wire them through a local proxy, and switch which model provider any agent uses without editing the agent's own config.
 ---
 
 # thomas
