@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-01
+
+### Changed
+
+- Renamed npm package from `@openguardrails/thomas` to `@thomas-security/thomas`. Repository moved to `github.com/thomas-security/thomas`. Daemon LaunchAgent / systemd label changed from `com.openguardrails.thomas` to `security.thomas` — users with the daemon installed on 0.1.0 should run `thomas daemon uninstall` before upgrading, then `thomas daemon install` again afterward.
+
 ## [0.1.0] - 2026-04-30
 
 ### Added

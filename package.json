@@ -1,6 +1,6 @@
 {
   "name": "@thomas-security/thomas",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Thomas is the plug-and-play model hub that connects your agents to your models, with security guardrails, quotas, fallback, and cost controls.",
   "license": "AGPL-3.0-only",
   "author": "Thomas Security, Inc.",
