@@ -46,7 +46,7 @@ src/
     quote.ts                   Shell quoting + thomas-invocation resolution
   daemon/
     service.ts                 Cross-platform Service interface + factory
-    constants.ts               LABEL = "com.openguardrails.thomas"
+    constants.ts               LABEL = "security.thomas"
     launchd.ts                 macOS LaunchAgent + exported renderPlist
     systemd.ts                 Linux systemd user service + exported renderSystemdUnit
     scheduled-task.ts          Windows stub

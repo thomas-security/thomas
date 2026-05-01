@@ -1,16 +1,16 @@
 {
-  "name": "@openguardrails/thomas",
+  "name": "@thomas-security/thomas",
   "version": "0.1.0",
   "description": "Thomas is the plug-and-play model hub that connects your agents to your models, with security guardrails, quotas, fallback, and cost controls.",
   "license": "AGPL-3.0-only",
-  "author": "OpenGuardrails",
-  "homepage": "https://github.com/openguardrails/thomas",
+  "author": "Thomas Security, Inc.",
+  "homepage": "https://github.com/thomas-security/thomas",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/openguardrails/thomas.git"
+    "url": "git+https://github.com/thomas-security/thomas.git"
   },
   "bugs": {
-    "url": "https://github.com/openguardrails/thomas/issues"
+    "url": "https://github.com/thomas-security/thomas/issues"
   },
   "keywords": [
     "ai",

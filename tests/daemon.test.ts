@@ -5,14 +5,14 @@ import { renderSystemdUnit } from "../src/daemon/systemd.js";
 describe("renderPlist", () => {
   it("emits a valid plist with KeepAlive and the program arguments", () => {
     const xml = renderPlist({
-      label: "com.openguardrails.thomas",
+      label: "security.thomas",
       programArguments: ["/usr/local/bin/node", "/path/to/cli.js", "proxy", "serve", "--port", "51168"],
       workingDirectory: "/Users/x",
       logPath: "/Users/x/.thomas/proxy.log",
       home: "/Users/x",
     });
     expect(xml).toContain("<key>Label</key>");
-    expect(xml).toContain("<string>com.openguardrails.thomas</string>");
+    expect(xml).toContain("<string>security.thomas</string>");
     expect(xml).toContain("<string>/usr/local/bin/node</string>");
     expect(xml).toContain("<string>/path/to/cli.js</string>");
     expect(xml).toContain("<string>--port</string>");

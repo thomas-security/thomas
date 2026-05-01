@@ -20,7 +20,7 @@ export async function skillInstall(agentId: string): Promise<number> {
   const target = SKILL_DIRS[spec.id];
   if (!target) {
     console.error(`thomas: skill install for '${agentId}' is not supported in v0.1.0.`);
-    console.error("Copy SKILL.md manually from https://github.com/openguardrails/thomas");
+    console.error("Copy SKILL.md manually from https://github.com/thomas-security/thomas");
     return 1;
   }
   const source = locateSkillSource();

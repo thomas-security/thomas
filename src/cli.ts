@@ -41,7 +41,7 @@ Usage:
 
 Tip: install the skill so an AI agent can drive thomas for you:
   thomas skill install claude-code
-Or fetch SKILL.md from https://github.com/openguardrails/thomas
+Or fetch SKILL.md from https://github.com/thomas-security/thomas
 `;
 
 async function main(): Promise<number> {

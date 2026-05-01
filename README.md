@@ -35,7 +35,7 @@ Audience: individual users, developers, solo and small teams. Not aimed at enter
 ## Install
 
 ```sh
-npm i -g @openguardrails/thomas
+npm i -g @thomas-security/thomas
 thomas doctor
 ```
 
