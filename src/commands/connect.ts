@@ -5,8 +5,11 @@ import { readConfig } from "../config/config.js";
 import { upsertCredential } from "../config/credentials.js";
 import { paths } from "../config/paths.js";
 import { setRoute } from "../config/routes.js";
+import { writeSnapshot } from "../config/snapshots.js";
 import { getAgent } from "../agents/registry.js";
+import type { AgentSpec } from "../agents/types.js";
 import { ensureRunning } from "../daemon/lifecycle.js";
+import { getProvider, registerCustom } from "../providers/registry.js";
 import { installShim } from "../shim/install.js";
 import { resolveThomasInvocation } from "../shim/quote.js";
 
@@ -31,15 +34,7 @@ export async function connect(opts: ConnectOptions): Promise<number> {
   }
 
   const cfg = await readConfig();
-  const importedProviders: string[] = [];
-
-  if (!opts.noImport && spec.extractCredentials) {
-    const creds = await spec.extractCredentials();
-    for (const cred of creds) {
-      await upsertCredential(cred);
-      importedProviders.push(cred.provider);
-    }
-  }
+  const importedProviders = !opts.noImport ? await importCredentials(spec) : [];
 
   if (importedProviders.length > 0) {
     const defaultProvider = importedProviders[0]!;
@@ -65,17 +60,26 @@ export async function connect(opts: ConnectOptions): Promise<number> {
   }
 
   const token = `thomas-${spec.id}-${randomBytes(16).toString("hex")}`;
+  const shimContext = { thomasUrl: `http://127.0.0.1:${cfg.port}`, thomasToken: token };
 
-  const shimPath = await installShim({
-    agent: spec,
-    thomasInvocation: resolveThomasInvocation(),
-    originalBinary: detect.binaryPath,
-    port: cfg.port,
-    token,
-  });
+  let shimPath: string | undefined;
+  if (spec.shimEnv && Object.keys(spec.shimEnv).length > 0) {
+    shimPath = await installShim({
+      agent: spec,
+      thomasInvocation: resolveThomasInvocation(),
+      originalBinary: detect.binaryPath,
+      port: cfg.port,
+      token,
+    });
+  }
+
+  if (spec.applyConfig) {
+    const snapshot = await spec.applyConfig(shimContext);
+    await writeSnapshot(snapshot);
+  }
 
   await recordConnect(spec.id, {
-    shimPath,
+    shimPath: shimPath ?? "",
     originalBinary: detect.binaryPath,
     connectedAt: new Date().toISOString(),
     token,
@@ -84,8 +88,15 @@ export async function connect(opts: ConnectOptions): Promise<number> {
   await ensureRunning(cfg.port);
 
   console.log(`Connected ${spec.displayName}.`);
-  console.log(`  shim:     ${shimPath}`);
-  console.log(`  original: ${detect.binaryPath}`);
+  if (shimPath) {
+    console.log(`  shim:     ${shimPath}`);
+    console.log(`  original: ${detect.binaryPath}`);
+  } else {
+    console.log(`  binary:   ${detect.binaryPath}`);
+  }
+  if (spec.applyConfig) {
+    console.log(`  config:   patched (snapshot stored, \`thomas disconnect\` reverts)`);
+  }
   if (importedProviders.length > 0) {
     console.log(`  imported: ${importedProviders.join(", ")}`);
   }
@@ -101,9 +112,31 @@ export async function connect(opts: ConnectOptions): Promise<number> {
     console.log(`        thomas route ${spec.id} <provider/model>`);
     console.log("");
   }
-  console.log("Add this to your shell rc so the shim takes priority:");
-  console.log(`  export PATH="${paths.bin}:$PATH"`);
-  console.log("Then start a new shell session, or:  source ~/.zshrc  (or ~/.bashrc)");
+  if (shimPath) {
+    console.log("Add this to your shell rc so the shim takes priority:");
+    console.log(`  export PATH="${paths.bin}:$PATH"`);
+    console.log("Then start a new shell session, or:  source ~/.zshrc  (or ~/.bashrc)");
+  }
   return 0;
 }
 
+async function importCredentials(spec: AgentSpec): Promise<string[]> {
+  if (!spec.extractCredentials) return [];
+  const extracted = await spec.extractCredentials();
+  const imported: string[] = [];
+  for (const item of extracted) {
+    await upsertCredential(item.credential);
+    imported.push(item.credential.provider);
+    if (item.provider) {
+      const existing = await getProvider(item.provider.id);
+      if (!existing) {
+        try {
+          await registerCustom(item.provider);
+        } catch {
+          // race with built-in or duplicate write — safe to ignore
+        }
+      }
+    }
+  }
+  return imported;
+}

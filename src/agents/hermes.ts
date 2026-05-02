@@ -1,31 +1,27 @@
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Credential } from "../config/credentials.js";
 import { home } from "../config/paths.js";
+import type { ProviderSpec } from "../providers/registry.js";
 import { fileExists, tryGetVersion, whichBinary } from "./detect-helpers.js";
 import { parseDotenv } from "./dotenv.js";
-import type { AgentSpec, CredentialSource, DetectResult } from "./types.js";
+import { HERMES_PROVIDERS, type HermesProviderEntry } from "../providers/agents/hermes.generated.js";
+import type { AgentSpec, CredentialSource, DetectResult, ExtractedCredential } from "./types.js";
 
 function hermesHome(): string {
   return process.env.HERMES_HOME ?? home(".hermes");
 }
-
-/** Map of hermes env-var key → thomas built-in provider id. */
-const ENV_KEY_TO_PROVIDER: Record<string, string> = {
-  OPENROUTER_API_KEY: "openrouter",
-  OPENAI_API_KEY: "openai",
-  ANTHROPIC_API_KEY: "anthropic",
-  KIMI_API_KEY: "kimi",
-  DEEPSEEK_API_KEY: "deepseek",
-  GROQ_API_KEY: "groq",
-};
 
 export const hermes: AgentSpec = {
   id: "hermes",
   displayName: "Hermes Agent",
   binaries: ["hermes"],
   protocol: "openai",
-  shimEnv: { baseUrl: "OPENAI_BASE_URL", apiKey: "OPENAI_API_KEY" },
-  baseUrlPath: "/v1",
+  shimEnv: {
+    HERMES_INFERENCE_PROVIDER: "openrouter",
+    OPENROUTER_API_KEY: "${THOMAS_TOKEN}",
+    OPENROUTER_BASE_URL: "${THOMAS_URL}/v1",
+  },
 
   async detect(): Promise<DetectResult> {
     const binaryPath = await whichBinary("hermes");
@@ -59,15 +55,44 @@ export const hermes: AgentSpec = {
     };
   },
 
-  async extractCredentials(): Promise<Credential[]> {
+  async extractCredentials(): Promise<ExtractedCredential[]> {
     const env = await parseDotenv(join(hermesHome(), ".env"));
-    const out: Credential[] = [];
-    for (const [envKey, provider] of Object.entries(ENV_KEY_TO_PROVIDER)) {
-      const value = env[envKey];
-      if (typeof value === "string" && value.length > 0) {
-        out.push({ provider, type: "api_key", key: value });
-      }
+    const out: ExtractedCredential[] = [];
+    const seen = new Set<string>();
+
+    for (const entry of HERMES_PROVIDERS) {
+      if (seen.has(entry.thomasId)) continue;
+      const key = pickFirst(env, entry.envKeys);
+      if (!key) continue;
+      seen.add(entry.thomasId);
+      const credential: Credential = {
+        provider: entry.thomasId,
+        type: "api_key",
+        key,
+      };
+      out.push({ credential, provider: providerSpec(entry) });
     }
+
     return out;
   },
 };
+
+function pickFirst(env: Record<string, string>, keys: readonly string[]): string | undefined {
+  for (const k of keys) {
+    const v = env[k];
+    if (typeof v === "string" && v.length > 0) return v;
+  }
+  return undefined;
+}
+
+/** Surface a ProviderSpec only for hermes-only providers. Built-ins (anthropic/openai/etc.)
+ *  are already registered, so don't shadow them. */
+function providerSpec(entry: HermesProviderEntry): ProviderSpec | undefined {
+  if (entry.builtin) return undefined;
+  return {
+    id: entry.thomasId,
+    protocol: entry.protocol,
+    originBaseUrl: entry.originBaseUrl,
+    custom: true,
+  };
+}

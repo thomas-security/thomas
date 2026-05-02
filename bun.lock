@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@thomas-security/thomas",
+      "name": "@trustunknown/thomas",
       "devDependencies": {
         "@types/bun": "latest",
         "@types/node": "^20",

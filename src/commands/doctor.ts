@@ -61,7 +61,7 @@ function printSkillTip(
 ): void {
   const claude = results.find((r) => r.spec.id === "claude-code");
   if (!claude?.detect.installed) {
-    console.log("Tip: skills can be fetched from https://github.com/thomas-security/thomas");
+    console.log("Tip: skills can be fetched from https://github.com/trustunknown/thomas");
     return;
   }
   if (claude.skillInstalled) {

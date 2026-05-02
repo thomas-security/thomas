@@ -27,6 +27,9 @@ export const paths = {
   get bin() {
     return join(thomasDir(), "bin");
   },
+  get snapshots() {
+    return join(thomasDir(), "snapshots");
+  },
   get proxyPid() {
     return join(thomasDir(), "proxy.pid");
   },
