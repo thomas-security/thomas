@@ -14,7 +14,12 @@ Roadmap order: **connect → control → optimize → protect.** v0.1.0 covers c
 
 ## Architecture (load-bearing)
 
-**Non-invasive shim model.** `thomas connect <agent>` writes a wrapper at `~/.thomas/bin/<binary>` that fronts the real binary on PATH. The wrapper sets `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` and a thomas-issued token, then `exec`s the real binary. Original agent config is never touched. Uninstall thomas → shim disappears → agent reverts. **Any approach that mutates `~/.claude/settings.json`, `~/.codex/auth.json`, etc. is wrong** — that is what cc-switch and claude-code-router do, and is the bug class thomas is designed to avoid.
+**Two connect modes, by agent capability.** `AgentSpec` declares `shimEnv` (env vars the shim sets) and/or `applyConfig`/`revertConfig` (config-file mutation with snapshot). The connect command runs whichever the spec defines.
+
+- **shim-env (preferred)**: agents that respect `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` / per-provider `*_BASE_URL` env vars (claude-code, codex, hermes). `thomas connect` writes a wrapper at `~/.thomas/bin/<binary>` earlier on PATH than the real binary; the wrapper exports the env block and `exec`s the real binary. Original agent config is **never touched**. Uninstall thomas → shim disappears → agent reverts.
+- **config-mode (only when forced)**: agents that don't read base-URL env vars and resolve providers exclusively through their own config file (openclaw is the current case). `applyConfig` mutates the agent's config but must be **strictly additive** (preserve existing user data) and **fully reversible**: it returns an `AgentSnapshot` persisted at `~/.thomas/snapshots/<agent>.json` capturing the prior values it overwrote. `thomas disconnect` reads the snapshot and calls `revertConfig` to restore. Config-mode agents can also have `shimEnv` so their config can reference an env-var-injected token (e.g., openclaw config sets `apiKey: "THOMAS_OPENCLAW_TOKEN"`, shim sets that env var) — keeps the bearer token out of the on-disk config.
+
+**The cc-switch trap to avoid.** cc-switch claims "non-invasive" but does the opposite: it directly overwrites agent configs with no backup and no auto-restore on uninstall. Don't replicate that. Config-mode mutations in thomas MUST satisfy: (a) additive (don't wipe sibling entries); (b) snapshotted (`AgentSnapshot` captures prior state); (c) reversible (`revertConfig` restores cleanly); (d) self-describing if the user nukes `~/.thomas/` — the openclaw config keeps an env-var reference rather than a literal token, so worst case the user gets a dead provider entry they can delete with `jq`, not a stolen token.
 
 **Single local proxy** (default port 51168, configurable). Listens on `/v1/messages` and `/v1/chat/completions`. Inbound auth is the thomas-issued token in the request header; the proxy looks up caller agent → route → provider creds → swaps auth → forwards.
 
@@ -41,9 +46,14 @@ src/
       anthropic-to-openai.ts   translateRequest + translateResponseBody + StreamTranslator
       openai-to-anthropic.ts   translateRequest + translateResponseBody + StreamTranslator
   shim/
-    install.ts                 Generate + write shim files under ~/.thomas/bin/
+    install.ts                 Generate + write shim files under ~/.thomas/bin/; renderEnvBlock() exported for tests
     templates.ts               Inlined sh + cmd templates (must be inlined; bun build does not bundle non-imported files)
     quote.ts                   Shell quoting + thomas-invocation resolution
+  providers/
+    registry.ts                BUILTIN map + custom-provider persistence (~/.thomas/providers.json)
+    agents/
+      hermes.generated.ts      Mirror of hermes_cli/auth.py PROVIDER_REGISTRY. Regenerate-by-hand;
+                               `bun run sync:providers` is the drift detector that flags upstream changes.
   daemon/
     service.ts                 Cross-platform Service interface + factory
     constants.ts               LABEL = "security.thomas"
@@ -57,6 +67,7 @@ src/
     credentials.ts             SecretRef + Credential schema (matches openclaw's auth-profiles)
     routes.ts                  agent → provider/model
     agents.ts                  connected agents + thomas tokens
+    snapshots.ts               Per-agent config-mode snapshots (~/.thomas/snapshots/<agent>.json)
     io.ts                      Atomic JSON read/write with mode 0600
   commands/                    One file per top-level CLI verb
 SKILL.md                       Skill bundle root for AI agents that drive thomas
@@ -69,13 +80,16 @@ tests/                         bun:test; bunfig.toml scopes to this dir
 - TS strict (`strict: true`, `noUncheckedIndexedAccess: true`), ESM, Node 20+ runtime.
 - Imports use `node:` prefix for built-ins. **No external runtime deps**; only `node:` modules + `fetch` (Node 20+).
 - `paths` is a getter object — env (`THOMAS_HOME`) is read at access time so tests can swap per-test.
-- Each agent module exports an `AgentSpec` with `detect()` and optional `extractCredentials()`. Adding a fifth agent: drop in `src/agents/<id>.ts`, register in `src/agents/registry.ts`, add to the `AgentId` union.
-- Adding a built-in provider: append entry to `BUILTIN` in `src/providers/registry.ts`. User-specific providers go via `thomas providers register`, persisted at `~/.thomas/providers.json`.
+- Each agent module exports an `AgentSpec` with `detect()` and optional `extractCredentials()` / `shimEnv` / `applyConfig` / `revertConfig`. Adding a fifth agent: drop in `src/agents/<id>.ts`, register in `src/agents/registry.ts`, add to the `AgentId` union. Pick shim-env or config-mode based on whether the agent reads `*_BASE_URL` env vars.
+- `shimEnv` values may use `${THOMAS_URL}` and `${THOMAS_TOKEN}` template tokens, resolved at install time. `extractCredentials` returns `ExtractedCredential[]` — pair a `Credential` with an optional `ProviderSpec` so connect can auto-register custom endpoints (e.g., the user's vllm baseUrl).
+- Adding a built-in provider: append entry to `BUILTIN` in `src/providers/registry.ts`. User-specific providers come in automatically when extracted from an agent (with `provider` attached on the `ExtractedCredential`), or via `thomas providers register`, persisted at `~/.thomas/providers.json`.
+- Hermes provider list lives in `src/providers/agents/hermes.generated.ts`. When upstream hermes adds/renames a provider, run `bun run sync:providers` to detect drift, then update by hand. Source of truth is hermes's `auth.py` `PROVIDER_REGISTRY` (canonical IDs and env aliases); `providers.py` `HERMES_OVERLAYS` uses display-layer renames that are aliases, not creds.
 - Daemon service interface follows openclaw's `GatewayService` shape (`label`, `install`, `uninstall`, `status`, `start`, `stop`). Don't add per-platform branches outside `daemon/{launchd,systemd,scheduled-task}.ts`.
 - Comments: only the non-obvious why. Don't restate the code. No multi-line block comments.
 
 ## Gotchas
 
+- **OpenClaw doesn't read `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`.** It resolves providers exclusively through `~/.openclaw/openclaw.json` (`models.providers.<id>.baseUrl` + `agents.defaults.model.primary`). That's why openclaw is the only config-mode agent. The connect flow adds `models.providers.thomas` (with `apiKey: "THOMAS_OPENCLAW_TOKEN"` — env var ref, not literal) plus an entry under `agents.defaults.models["thomas/auto"]`, and switches `agents.defaults.model.primary` to `thomas/auto`. `applyConfig` snapshots the prior values; `revertConfig` reads the snapshot and restores. The shim sets `THOMAS_OPENCLAW_TOKEN` so the bearer never touches disk.
 - **Claude Code OAuth tokens do not work for direct Anthropic API.** They are scoped to claude.ai endpoints and rejected by `/v1/messages` with `"OAuth authentication is currently not supported."` `thomas connect claude-code` imports the OAuth as a labeled credential, but actual passthrough to Anthropic requires a `sk-ant-` API key. The connect command warns the user about this. Do not regress the warning.
 - **macOS keychain account name varies.** For service `Claude Code-credentials`, the account is the local username (e.g. `tom`), not the literal `"Claude Code"` that openclaw's source suggests. `macKeychainFind()` looks up by service only and returns the actual account.
 - **`bun build --target=node` does not bundle non-imported files.** That bit shim templates once (they were external `template.sh` / `.cmd` files; loading them at runtime broke after bundling). They are now inlined as TS strings in `src/shim/templates.ts`. Same trap applies to anything else that does runtime `readFile` of project assets — only SKILL.md is currently safe because `skillInstall` walks up to the package root and SKILL.md is in `package.json#files`.

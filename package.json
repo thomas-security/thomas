@@ -1,16 +1,16 @@
 {
-  "name": "@thomas-security/thomas",
-  "version": "0.1.1",
+  "name": "@trustunknown/thomas",
+  "version": "0.1.2",
   "description": "Thomas is the plug-and-play model hub that connects your agents to your models, with security guardrails, quotas, fallback, and cost controls.",
   "license": "AGPL-3.0-only",
   "author": "Thomas Security, Inc.",
-  "homepage": "https://github.com/thomas-security/thomas",
+  "homepage": "https://github.com/trustunknown/thomas",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thomas-security/thomas.git"
+    "url": "git+https://github.com/trustunknown/thomas.git"
   },
   "bugs": {
-    "url": "https://github.com/thomas-security/thomas/issues"
+    "url": "https://github.com/trustunknown/thomas/issues"
   },
   "keywords": [
     "ai",
@@ -33,6 +33,7 @@
     "dev": "bun run src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "sync:providers": "bun run scripts/sync-providers.ts",
     "prepublishOnly": "bun run build && bun test"
   },
   "files": [

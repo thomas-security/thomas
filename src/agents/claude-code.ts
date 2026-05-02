@@ -1,5 +1,4 @@
 import { readFile } from "node:fs/promises";
-import type { Credential } from "../config/credentials.js";
 import { home } from "../config/paths.js";
 import {
   fileExists,
@@ -8,15 +7,17 @@ import {
   tryGetVersion,
   whichBinary,
 } from "./detect-helpers.js";
-import type { AgentSpec, CredentialSource, DetectResult } from "./types.js";
+import type { AgentSpec, CredentialSource, DetectResult, ExtractedCredential } from "./types.js";
 
 export const claudeCode: AgentSpec = {
   id: "claude-code",
   displayName: "Claude Code",
   binaries: ["claude"],
   protocol: "anthropic",
-  shimEnv: { baseUrl: "ANTHROPIC_BASE_URL", apiKey: "ANTHROPIC_API_KEY" },
-  baseUrlPath: "",
+  shimEnv: {
+    ANTHROPIC_BASE_URL: "${THOMAS_URL}",
+    ANTHROPIC_API_KEY: "${THOMAS_TOKEN}",
+  },
 
   async detect(): Promise<DetectResult> {
     const binaryPath = await whichBinary("claude");
@@ -54,7 +55,7 @@ export const claudeCode: AgentSpec = {
     };
   },
 
-  async extractCredentials(): Promise<Credential[]> {
+  async extractCredentials(): Promise<ExtractedCredential[]> {
     const blob =
       (await macKeychainRead("Claude Code-credentials")) ??
       (await readFile(home(".claude", ".credentials.json"), "utf8").catch(() => undefined));
@@ -65,11 +66,13 @@ export const claudeCode: AgentSpec = {
       if (oauth?.accessToken) {
         return [
           {
-            provider: "anthropic",
-            type: "oauth",
-            access: oauth.accessToken,
-            refresh: oauth.refreshToken,
-            expiresAt: oauth.expiresAt,
+            credential: {
+              provider: "anthropic",
+              type: "oauth",
+              access: oauth.accessToken,
+              refresh: oauth.refreshToken,
+              expiresAt: oauth.expiresAt,
+            },
           },
         ];
       }
