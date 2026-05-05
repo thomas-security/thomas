@@ -1,5 +1,5 @@
 import { chmod, mkdir, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { paths } from "../config/paths.js";
 import type { AgentSpec, ShimContext } from "../agents/types.js";
 import { CMD_TEMPLATE, SH_TEMPLATE } from "./templates.js";
@@ -70,4 +70,42 @@ export async function removeShim(agent: AgentSpec): Promise<void> {
   const ext = process.platform === "win32" ? ".cmd" : "";
   const shimPath = join(paths.bin, `${agent.binaries[0]}${ext}`);
   await unlink(shimPath).catch(() => undefined);
+}
+
+export type ShimVerification =
+  | { ok: true; binDir: string }
+  | {
+      ok: false;
+      // missing  = paths.bin is not on PATH at all
+      // shadowed = paths.bin is on PATH but appears AFTER the original binary's dir
+      reason: "missing" | "shadowed";
+      binDir: string;
+      originalDir: string;
+      pathEntries: string[];
+    };
+
+// Static check: would the shim at paths.bin/<binary> win over `originalBinary`
+// when the user invokes `<binary>` from this same shell? Without this, connect
+// silently appears to succeed but the agent keeps using the real binary, which
+// for config-mode agents (openclaw) means the shim's env var (e.g.
+// THOMAS_OPENCLAW_TOKEN) is never set and the proxy returns 401.
+export function verifyShimWins(
+  originalBinary: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ShimVerification {
+  const sep = process.platform === "win32" ? ";" : ":";
+  const binDir = resolve(paths.bin);
+  const originalDir = resolve(dirname(originalBinary));
+  const pathEntries = (env.PATH ?? "").split(sep).filter(Boolean);
+  const normalized = pathEntries.map((p) => resolve(p));
+  const binDirIndex = normalized.indexOf(binDir);
+  const originalDirIndex = normalized.indexOf(originalDir);
+
+  if (binDirIndex === -1) {
+    return { ok: false, reason: "missing", binDir, originalDir, pathEntries };
+  }
+  if (originalDirIndex !== -1 && originalDirIndex < binDirIndex) {
+    return { ok: false, reason: "shadowed", binDir, originalDir, pathEntries };
+  }
+  return { ok: true, binDir };
 }
