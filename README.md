@@ -19,7 +19,7 @@ Roadmap order: **connect → control → optimize → protect.**
 | **optimize** | Multi-provider fallback on failure; cost-aware routing; latency-aware routing | 🚧 planned |
 | **protect** | Prompt-injection / PII / secret detection; tool-call guardrails | 💼 commercial (planned) |
 
-The open core is licensed under AGPL-3.0. Security and governance features will ship as a commercial add-on.
+The open core is licensed under Apache-2.0. Security, governance, and team/enterprise features ship as a separate commercial product (`thomas-cloud`) that thomas can talk to over HTTP.
 
 Audience: individual users, developers, solo and small teams. Not aimed at enterprise procurement.
 
@@ -110,18 +110,19 @@ After this, your Claude Code session can answer "switch claude code to kimi" / "
 
 ## License
 
-This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
 This means:
 
 - ✅ You can use, modify, and distribute this software
 - ✅ You can use it for commercial purposes
-- ⚠️ **You must disclose source code** when you distribute the software
-- ⚠️ **Network use is distribution** — if you run a modified version on a server and let others interact with it, you must make the source code available to them
-- ⚠️ Modifications must be released under the same license
+- ✅ Includes an explicit patent-license grant from contributors
+- ✅ You can build closed-source products on top (e.g. ship your own agent adapter as a private package)
+- ⚠️ You must preserve copyright and license notices, and include the [NOTICE](NOTICE) file when redistributing
+- ⚠️ "thomas" is a trademark of Trust Unknown; the license does not grant trademark rights
 
-See the [LICENSE](LICENSE) file for the full license text.
+See the [LICENSE](LICENSE) and [NOTICE](NOTICE) files for the full text.
 
-### Why AGPL-3.0?
+### Why Apache-2.0?
 
-AGPL-3.0 ensures that improvements to this software benefit the entire community. If you modify thomas and deploy it as a service, you must share your improvements with your users. Commercial security and governance features will ship under a separate license.
+The agent and protocol adapters in this repo (the L1 and L2 layers — what makes thomas talk to Claude Code, Codex, OpenClaw, Hermes, etc.) live closer to ecosystem infrastructure than to product IP. Apache-2.0 lets the community fork, contribute, and embed those adapters without copyleft friction; meanwhile the proprietary value (policy intelligence, multi-tenant control plane, security analysis) lives in a separate commercial product (`thomas-cloud`) that communicates with thomas over HTTP.

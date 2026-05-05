@@ -2,7 +2,7 @@
   "name": "@trustunknown/thomas",
   "version": "8.0.0",
   "description": "Thomas is the plug-and-play model hub that connects your agents to your models, with security guardrails, quotas, fallback, and cost controls.",
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "author": "Thomas Security, Inc.",
   "homepage": "https://github.com/trustunknown/thomas",
   "repository": {
@@ -42,6 +42,7 @@
     "SKILL.md",
     "README.md",
     "LICENSE",
+    "NOTICE",
     "CHANGELOG.md"
   ],
   "engines": {
