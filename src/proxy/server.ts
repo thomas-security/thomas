@@ -6,6 +6,7 @@ import { findCredential, resolveSecret } from "../config/credentials.js";
 import { paths } from "../config/paths.js";
 import { getRoute } from "../config/routes.js";
 import { getAgent } from "../agents/registry.js";
+import { loadProviderFromCloudCache } from "../cloud/providers.js";
 import { getProvider, type ProviderSpec } from "../providers/registry.js";
 import type { AgentId, AgentSpec, Protocol } from "../agents/types.js";
 import { decideForAgent } from "../policy/decide.js";
@@ -238,12 +239,36 @@ async function attempt(params: {
   inboundPath: string;
   req: IncomingMessage;
 }): Promise<AttemptOutcome> {
-  const provider = await getProvider(params.target.provider);
+  // Local registry first (builtins + ~/.thomas/providers.json). Falls back to
+  // the cloud-cache snapshot — covers the case where the user configured a
+  // provider on thomas-cloud but hasn't run `thomas providers register` locally.
+  // Credential lookup is unchanged: keys NEVER come from cloud, only from
+  // ~/.thomas/credentials.json.
+  let provider = await getProvider(params.target.provider);
+  let providerSource: "local" | "cloud" = "local";
   if (!provider) {
-    return { ok: false, status: 503, reply: `Unknown provider ${params.target.provider}` };
+    provider = await loadProviderFromCloudCache(params.target.provider);
+    if (provider) providerSource = "cloud";
+  }
+  if (!provider) {
+    return {
+      ok: false,
+      status: 503,
+      reply: `Unknown provider ${params.target.provider}`,
+    };
   }
   const cred = await findCredential(provider.id);
-  if (!cred) return { ok: false, status: 503, reply: `No credentials for provider ${provider.id}` };
+  if (!cred) {
+    const hint =
+      providerSource === "cloud"
+        ? ` Provider was delivered from thomas-cloud; add a local key with \`thomas providers add ${provider.id} <key>\`.`
+        : "";
+    return {
+      ok: false,
+      status: 503,
+      reply: `No credentials for provider ${provider.id}.${hint}`,
+    };
+  }
   const secret = resolveSecret(cred);
   if (!secret) {
     return { ok: false, status: 503, reply: `Could not resolve secret for ${provider.id}` };
