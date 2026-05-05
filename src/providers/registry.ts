@@ -5,7 +5,19 @@ import type { Protocol } from "../agents/types.js";
 export type ProviderSpec = {
   id: string;
   protocol: Protocol;
-  /** Origin (scheme + host + optional prefix). The proxy appends the inbound `/v1/...` path. */
+  /**
+   * Base URL up to (but not including) the verb segment (`/chat/completions`,
+   * `/messages`). May end at the origin (e.g. `https://api.openai.com`) OR
+   * include any path prefix the user wants — including a `/v1` segment. Both
+   * styles are supported:
+   *   - `https://api.openai.com`            (legacy: proxy adds `/v1` adaptively)
+   *   - `https://api.openai.com/v1`         (preferred: proxy uses as-is)
+   *   - `https://api.xiangxinai.cn/v1/gateway`  (path-after-/v1 prefixes are preserved)
+   *   - `https://api.groq.com/openai`       (path-before-/v1 prefixes — proxy adds /v1)
+   * The proxy's adaptive resolver (see buildOutboundCandidates in proxy/server.ts)
+   * tries the URL as-typed first, falling back to inserting /v1 only if the
+   * upstream returns 404.
+   */
   originBaseUrl: string;
   custom?: boolean;
 };
