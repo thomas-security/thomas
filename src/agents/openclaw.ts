@@ -152,7 +152,10 @@ export const openclaw: AgentSpec = {
     config.models.providers[THOMAS_PROVIDER_ID] = {
       baseUrl: `${ctx.thomasUrl}/v1`,
       api: "openai-completions",
-      apiKey: TOKEN_ENV,
+      // ${VAR} template — openclaw's parseEnvTemplateSecretRef recognizes this and resolves
+      // from process.env at request time. A bare "VARNAME" would be sent literally as the
+      // bearer (only whitelisted built-in env names get auto-resolved).
+      apiKey: `\${${TOKEN_ENV}}`,
       models: [
         {
           id: "auto",
@@ -244,7 +247,11 @@ function inferProviderSpec(
   config: OpenclawProviderConfig | undefined,
 ): ProviderSpec | undefined {
   if (!config?.baseUrl) return undefined;
-  const origin = config.baseUrl.replace(/\/+$/, "").replace(/\/v1(\/[^?]*)?$/, "");
+  // Preserve the user's full baseUrl — the proxy decides at request time whether
+  // to insert /v1. Old behavior stripped /v1 here, which silently dropped any
+  // path segment after it (e.g. .../v1/gateway became .../) so the proxy could
+  // never reach openclaw-style gateway endpoints.
+  const origin = config.baseUrl.replace(/\/+$/, "");
   return { id, protocol: protocolFromApi(config.api), originBaseUrl: origin, custom: true };
 }
 

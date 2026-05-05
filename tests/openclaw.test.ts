@@ -65,7 +65,9 @@ describe("openclaw spec", () => {
       expect(byProvider.vllm!.provider).toEqual({
         id: "vllm",
         protocol: "openai",
-        originBaseUrl: "https://api.example.com/coding",
+        // Full baseUrl preserved (including /v1) — old behavior stripped /v1, which
+        // also dropped post-/v1 segments and broke openclaw-style /v1/gateway endpoints.
+        originBaseUrl: "https://api.example.com/coding/v1",
         custom: true,
       });
 
@@ -121,7 +123,7 @@ describe("openclaw spec", () => {
       expect(after.models.providers.thomas).toMatchObject({
         baseUrl: "http://127.0.0.1:51168/v1",
         api: "openai-completions",
-        apiKey: "THOMAS_OPENCLAW_TOKEN",
+        apiKey: "${THOMAS_OPENCLAW_TOKEN}",
       });
       // default switched
       expect(after.agents.defaults.model.primary).toBe("thomas/auto");

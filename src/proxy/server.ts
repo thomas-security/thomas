@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { findByToken } from "../config/agents.js";
 import { findCredential, resolveSecret } from "../config/credentials.js";
@@ -6,9 +7,16 @@ import { paths } from "../config/paths.js";
 import { getRoute } from "../config/routes.js";
 import { getAgent } from "../agents/registry.js";
 import { getProvider, type ProviderSpec } from "../providers/registry.js";
-import type { AgentSpec } from "../agents/types.js";
+import type { AgentId, AgentSpec, Protocol } from "../agents/types.js";
+import { decideForAgent } from "../policy/decide.js";
+import { shouldFailover } from "../policy/failover.js";
+import { getPolicy } from "../policy/store.js";
+import { computeCost } from "../runs/pricing.js";
+import { appendRun } from "../runs/store.js";
+import { StreamUsageWatcher, ZERO_USAGE, extractUsageFromBody, type Usage } from "../runs/usage.js";
 import * as AtoO from "./translate/anthropic-to-openai.js";
 import * as OtoA from "./translate/openai-to-anthropic.js";
+import { ensureOpenAIIncludeUsage } from "./usage-injection.js";
 
 export async function startServer(port: number, host = "127.0.0.1"): Promise<Server> {
   const server = createServer((req, res) => {
@@ -56,70 +64,310 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     );
   }
 
-  const provider = await getProvider(route.provider);
-  if (!provider) return reply(res, 503, `Unknown provider ${route.provider}`);
-
-  const cred = await findCredential(provider.id);
-  if (!cred) return reply(res, 503, `No credentials for provider ${provider.id}`);
-
-  const secret = resolveSecret(cred);
-  if (!secret) return reply(res, 503, `Could not resolve secret for ${provider.id}`);
-
-  const direction = directionOf(agent, provider);
+  // Apply policy (cost cascade, etc.) — may rewrite provider+model.
+  const decision = await decideForAgent(found.agentId as AgentId, {
+    provider: route.provider,
+    model: route.model,
+  });
+  const effective = decision.target;
+  const policyConfig =
+    decision.policyId === "cost-cascade"
+      ? await getPolicy(found.agentId as AgentId)
+      : undefined;
 
   const inboundBody = await readBody(req);
-  const { outboundBody, outboundPath, isStream } = prepareOutbound({
-    direction,
-    inboundBody,
-    inboundPath: req.url ?? "",
-    routeModel: route.model,
-  });
+  const inboundPath = req.url ?? "";
 
-  const outboundUrl = `${provider.originBaseUrl}${outboundPath}`;
-  const outboundHeaders = buildOutboundHeaders({ provider, cred, req, secret });
+  const runStart = Date.now();
+  const startedAt = new Date(runStart).toISOString();
+  // Caller-provided run-id groups multiple model calls into one logical task.
+  // Optional — older agents that don't send it get a generated UUID per request,
+  // which still works (each call aggregates to itself with modelCalls=1).
+  const runId = headerString(req.headers["x-thomas-run-id"]) || randomUUID();
+
+  // Try the cascade-determined effective target. On retryable error + configured failover,
+  // retry once on the failover target. Only pre-stream errors are retryable; once we start
+  // writing 200 bytes to res, we're committed to the current upstream.
+  let outcome = await attempt({ agent, target: effective, inboundBody, inboundPath, req });
+  let actualTarget = effective;
+  let failoverNote: string | null = null;
+  let failovers = 0;
+
+  const triggerStatus = outcome.ok ? outcome.upstream.status : outcome.status;
+  const failoverDecision = shouldFailover(triggerStatus, policyConfig);
+  if (failoverDecision.yes) {
+    const reasonStr = outcome.ok
+      ? `HTTP ${outcome.upstream.status}`
+      : (outcome.reply || "fetch error");
+    failoverNote = `primary ${effective.provider}/${effective.model} ${reasonStr}; failed over to ${failoverDecision.target.provider}/${failoverDecision.target.model}`;
+    log("info", `[failover] ${found.agentId} ${failoverNote}`);
+    if (outcome.ok) {
+      await outcome.upstream.body?.cancel().catch(() => undefined);
+    }
+    const retried = await attempt({
+      agent,
+      target: failoverDecision.target,
+      inboundBody,
+      inboundPath,
+      req,
+    });
+    if (retried.ok) {
+      outcome = retried;
+      actualTarget = failoverDecision.target;
+      failovers = 1;
+    } else {
+      // failover also failed; surface both reasons
+      failoverNote = `${failoverNote}; failover also failed: ${retried.reply}`;
+    }
+  }
+
+  const tracker: RunTracker = {
+    runId,
+    agent: found.agentId as AgentId,
+    inboundProtocol: agent.protocol,
+    provider: actualTarget.provider,
+    model: actualTarget.model,
+    streamed: outcome.ok ? outcome.isStream : false,
+    failovers,
+    failoverNote,
+  };
+
+  if (!outcome.ok) {
+    await persistRun({
+      tracker,
+      startedAt,
+      durationMs: Date.now() - runStart,
+      usage: ZERO_USAGE,
+      httpStatus: outcome.status,
+      errorMessage: outcome.reply,
+    });
+    return reply(res, 502, outcome.reply);
+  }
+
+  const { upstream, provider, direction, isStream } = outcome;
 
   log(
     "info",
-    `${found.agentId} → ${provider.id}/${route.model} ${direction === "passthrough" ? "(passthrough)" : `(${direction})`} ${req.method} ${req.url} → ${outboundPath}`,
+    `${found.agentId} → ${provider.id}/${actualTarget.model}${decision.policyId ? ` [policy:${decision.policyId}]` : ""}${failovers ? " [failover]" : ""} ${direction === "passthrough" ? "(passthrough)" : `(${direction})`} ${req.method} ${req.url}`,
   );
 
-  let upstream: Response;
+  const watcher = isStream ? new StreamUsageWatcher(provider.protocol) : null;
+  // For non-streaming, collect bytes (passthrough delivers Uint8Array chunks) AND/OR
+  // the string passed by streamTranslatedResponse for non-streaming. Either fills the same buffer.
+  const nonStreamingChunks: Uint8Array[] = [];
+  const onUpstreamRaw = (chunk: Uint8Array | string) => {
+    if (isStream) {
+      if (typeof chunk !== "string") watcher?.feed(chunk);
+      return;
+    }
+    if (typeof chunk === "string") {
+      nonStreamingChunks.push(new TextEncoder().encode(chunk));
+    } else {
+      nonStreamingChunks.push(chunk);
+    }
+  };
+
   try {
-    upstream = await fetch(outboundUrl, {
-      method: req.method ?? "POST",
-      headers: outboundHeaders,
-      body: outboundBody,
+    if (direction === "anthropic-to-openai") {
+      await streamTranslatedResponse({
+        upstream,
+        res,
+        model: actualTarget.model,
+        isStream,
+        contentType: "application/json",
+        streamContentType: "text/event-stream",
+        translateBody: OtoA.translateResponseBody,
+        makeStreamTranslator: (m) => new OtoA.StreamTranslator(m),
+        errorWrap: toAnthropicError,
+        onUpstreamRaw,
+      });
+    } else if (direction === "openai-to-anthropic") {
+      await streamTranslatedResponse({
+        upstream,
+        res,
+        model: actualTarget.model,
+        isStream,
+        contentType: "application/json",
+        streamContentType: "text/event-stream",
+        translateBody: AtoO.translateResponseBody,
+        makeStreamTranslator: (m) => new AtoO.StreamTranslator(m),
+        errorWrap: toOpenAIError,
+        onUpstreamRaw,
+      });
+    } else {
+      await streamPassthrough({ upstream, res, onUpstreamRaw });
+    }
+  } finally {
+    let usage: Usage;
+    if (watcher) {
+      usage = watcher.finalize();
+    } else {
+      const total = nonStreamingChunks.reduce((n, c) => n + c.byteLength, 0);
+      const merged = new Uint8Array(total);
+      let offset = 0;
+      for (const c of nonStreamingChunks) {
+        merged.set(c, offset);
+        offset += c.byteLength;
+      }
+      const text = new TextDecoder().decode(merged);
+      usage = extractUsageFromBody(text, provider.protocol);
+    }
+    await persistRun({
+      tracker,
+      startedAt,
+      durationMs: Date.now() - runStart,
+      usage,
+      httpStatus: upstream.status,
+      errorMessage: upstream.ok ? null : `upstream ${upstream.status}`,
+    });
+  }
+}
+
+type AttemptOutcome =
+  | {
+      ok: true;
+      provider: ProviderSpec;
+      direction: Direction;
+      isStream: boolean;
+      upstream: Response;
+    }
+  | { ok: false; status: number; reply: string };
+
+async function attempt(params: {
+  agent: AgentSpec;
+  target: { provider: string; model: string };
+  inboundBody: string;
+  inboundPath: string;
+  req: IncomingMessage;
+}): Promise<AttemptOutcome> {
+  const provider = await getProvider(params.target.provider);
+  if (!provider) {
+    return { ok: false, status: 503, reply: `Unknown provider ${params.target.provider}` };
+  }
+  const cred = await findCredential(provider.id);
+  if (!cred) return { ok: false, status: 503, reply: `No credentials for provider ${provider.id}` };
+  const secret = resolveSecret(cred);
+  if (!secret) {
+    return { ok: false, status: 503, reply: `Could not resolve secret for ${provider.id}` };
+  }
+  const direction = directionOf(params.agent, provider);
+  const { outboundBody, outboundPath, isStream } = prepareOutbound({
+    direction,
+    inboundBody: params.inboundBody,
+    inboundPath: params.inboundPath,
+    routeModel: params.target.model,
+  });
+  // For OpenAI-protocol upstreams: ensure stream_options.include_usage so the
+  // final SSE chunk carries token counts. No-op when stream !== true or when
+  // the user already specified include_usage explicitly.
+  const finalBody =
+    provider.protocol === "openai" ? ensureOpenAIIncludeUsage(outboundBody) : outboundBody;
+  const outboundHeaders = buildOutboundHeaders({ provider, cred, req: params.req, secret });
+  const candidates = buildOutboundCandidates(provider.originBaseUrl, outboundPath);
+
+  let upstream: Response | undefined;
+  let lastErr: unknown;
+  for (let i = 0; i < candidates.length; i++) {
+    const url = candidates[i]!;
+    try {
+      upstream = await fetch(url, {
+        method: params.req.method ?? "POST",
+        headers: outboundHeaders,
+        body: finalBody,
+      });
+    } catch (err) {
+      lastErr = err;
+      upstream = undefined;
+      continue;
+    }
+    // 404 strongly suggests wrong path → try the next candidate. Other status
+    // codes (200, 401, 5xx, …) are returned to the caller as-is. 401 in particular
+    // is ambiguous (could be wrong key OR wrong path) — retrying would waste
+    // an upstream call and could double-charge if the second URL is also auth'd
+    // separately, so we don't retry on 401.
+    if (upstream.status === 404 && i < candidates.length - 1) {
+      log("info", `[adaptive-url] ${provider.id} ${url} → 404; trying ${candidates[i + 1]}`);
+      await upstream.body?.cancel().catch(() => undefined);
+      upstream = undefined;
+      continue;
+    }
+    break;
+  }
+  if (!upstream) {
+    return {
+      ok: false,
+      status: 0,
+      reply: `Upstream fetch failed: ${lastErr ?? "all URL candidates returned 404"}`,
+    };
+  }
+  return { ok: true, provider, direction, isStream, upstream };
+}
+
+// outboundPath is always the canonical "/v1/<verb>" form produced by prepareOutbound
+// (e.g. /v1/chat/completions, /v1/messages). The adaptive rule:
+//   - originBaseUrl already contains a `/v1` segment → strip /v1 from the verb path,
+//     since /v1 is already in the base. Single candidate.
+//   - originBaseUrl has NO /v1 → try without /v1 first (some local OpenAI-compatible
+//     servers serve verbs at the root), fall back to the legacy "/v1/<verb>" form.
+// This is purely additive over the legacy behavior: the legacy URL is always tried,
+// just possibly second.
+export function buildOutboundCandidates(originBaseUrl: string, outboundPath: string): string[] {
+  const base = originBaseUrl.replace(/\/+$/, "");
+  const verbWithoutV1 = outboundPath.replace(/^\/v1(?=\/)/, "");
+  if (/\/v1(\/|$)/.test(base)) {
+    return [`${base}${verbWithoutV1}`];
+  }
+  return [`${base}${verbWithoutV1}`, `${base}${outboundPath}`];
+}
+
+type RunTracker = {
+  runId: string;
+  agent: AgentId;
+  inboundProtocol: Protocol;
+  provider: string;
+  model: string;
+  streamed: boolean;
+  failovers: number;
+  failoverNote: string | null;
+};
+
+async function persistRun(params: {
+  tracker: RunTracker;
+  startedAt: string;
+  durationMs: number;
+  usage: Usage;
+  httpStatus: number;
+  errorMessage: string | null;
+}): Promise<void> {
+  const { tracker } = params;
+  const cost = await computeCost(
+    tracker.provider,
+    tracker.model,
+    params.usage.input,
+    params.usage.output,
+  );
+  try {
+    await appendRun({
+      runId: tracker.runId,
+      agent: tracker.agent,
+      startedAt: params.startedAt,
+      endedAt: new Date().toISOString(),
+      durationMs: params.durationMs,
+      status: params.httpStatus >= 200 && params.httpStatus < 400 ? "ok" : "error",
+      inboundProtocol: tracker.inboundProtocol,
+      outboundProvider: tracker.provider,
+      outboundModel: tracker.model,
+      inputTokens: params.usage.input,
+      outputTokens: params.usage.output,
+      cost,
+      streamed: tracker.streamed,
+      httpStatus: params.httpStatus,
+      errorMessage: params.errorMessage,
+      failovers: tracker.failovers,
+      failoverNote: tracker.failoverNote,
     });
   } catch (err) {
-    return reply(res, 502, `Upstream fetch failed: ${err}`);
-  }
-
-  if (direction === "anthropic-to-openai") {
-    await streamTranslatedResponse({
-      upstream,
-      res,
-      model: route.model,
-      isStream,
-      contentType: "application/json",
-      streamContentType: "text/event-stream",
-      translateBody: OtoA.translateResponseBody,
-      makeStreamTranslator: (m) => new OtoA.StreamTranslator(m),
-      errorWrap: toAnthropicError,
-    });
-  } else if (direction === "openai-to-anthropic") {
-    await streamTranslatedResponse({
-      upstream,
-      res,
-      model: route.model,
-      isStream,
-      contentType: "application/json",
-      streamContentType: "text/event-stream",
-      translateBody: AtoO.translateResponseBody,
-      makeStreamTranslator: (m) => new AtoO.StreamTranslator(m),
-      errorWrap: toOpenAIError,
-    });
-  } else {
-    await streamPassthrough({ upstream, res });
+    log("error", `failed to append run ${tracker.runId}: ${err}`);
   }
 }
 
@@ -211,15 +459,19 @@ async function streamTranslatedResponse(params: {
   translateBody: (body: string, model: string) => string;
   makeStreamTranslator: (model: string) => StreamTranslatorLike;
   errorWrap: (body: string) => string;
+  // Hook for run-tracking: receives each streaming chunk OR the full body once for non-streaming.
+  onUpstreamRaw?: (chunk: Uint8Array | string) => void;
 }): Promise<void> {
   if (!params.upstream.ok || !params.upstream.body) {
     const text = await params.upstream.text();
+    params.onUpstreamRaw?.(text);
     params.res.writeHead(params.upstream.status, { "content-type": params.contentType });
     params.res.end(params.errorWrap(text));
     return;
   }
   if (!params.isStream) {
     const text = await params.upstream.text();
+    params.onUpstreamRaw?.(text);
     params.res.writeHead(params.upstream.status, { "content-type": params.contentType });
     params.res.end(params.translateBody(text, params.model));
     return;
@@ -236,6 +488,7 @@ async function streamTranslatedResponse(params: {
       const { done, value } = await reader.read();
       if (done) break;
       if (value) {
+        params.onUpstreamRaw?.(value);
         const chunk = translator.feed(value);
         if (chunk) params.res.write(chunk);
       }
@@ -250,6 +503,7 @@ async function streamTranslatedResponse(params: {
 async function streamPassthrough(params: {
   upstream: Response;
   res: ServerResponse;
+  onUpstreamRaw?: (chunk: Uint8Array | string) => void;
 }): Promise<void> {
   const respHeaders: Record<string, string> = {};
   params.upstream.headers.forEach((value, key) => {
@@ -262,7 +516,10 @@ async function streamPassthrough(params: {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (value) params.res.write(value);
+      if (value) {
+        params.onUpstreamRaw?.(value);
+        params.res.write(value);
+      }
     }
   }
   params.res.end();

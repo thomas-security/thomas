@@ -155,4 +155,105 @@ describe("hermes extractCredentials", () => {
     const creds = await hermes.extractCredentials!();
     expect(creds).toEqual([]);
   });
+
+  it("imports a custom: provider from auth.json credential_pool", async () => {
+    await writeFile(
+      join(dir, "auth.json"),
+      JSON.stringify({
+        version: 1,
+        credential_pool: {
+          "custom:api.xiangxinai.cn": [
+            {
+              id: "abc",
+              auth_type: "api_key",
+              priority: 0,
+              access_token: "xxai-sk-real",
+              base_url: "https://api.xiangxinai.cn/v1",
+            },
+            {
+              id: "def",
+              auth_type: "api_key",
+              priority: 1,
+              access_token: "xxai-sk-fallback",
+              base_url: "https://api.xiangxinai.cn/v1",
+            },
+          ],
+        },
+      }),
+    );
+    const items = await hermes.extractCredentials!();
+    expect(items).toHaveLength(1);
+    const item = items[0]!;
+    expect(item.credential.provider).toBe("api-xiangxinai-cn");
+    expect(item.credential.key).toBe("xxai-sk-real");
+    expect(item.provider?.id).toBe("api-xiangxinai-cn");
+    expect(item.provider?.protocol).toBe("openai");
+    // Full base_url preserved (used to be stripped to "https://api.xiangxinai.cn",
+    // but stripping /v1 here would also drop post-/v1 path prefixes — see proxy
+    // adaptive URL building in src/proxy/server.ts).
+    expect(item.provider?.originBaseUrl).toBe("https://api.xiangxinai.cn/v1");
+    expect(item.provider?.custom).toBe(true);
+  });
+
+  it("imports a known hermes provider from auth.json when .env has no key", async () => {
+    await writeFile(
+      join(dir, "auth.json"),
+      JSON.stringify({
+        credential_pool: {
+          openrouter: [{ auth_type: "api_key", priority: 0, access_token: "sk-or-from-pool" }],
+          xai: [{ auth_type: "api_key", priority: 0, access_token: "xai-from-pool" }],
+        },
+      }),
+    );
+    const items = await hermes.extractCredentials!();
+    const byProvider = Object.fromEntries(items.map((i) => [i.credential.provider, i] as const));
+    expect(byProvider.openrouter!.credential.key).toBe("sk-or-from-pool");
+    expect(byProvider.openrouter!.provider).toBeUndefined(); // built-in: no ProviderSpec
+    expect(byProvider.xai!.credential.key).toBe("xai-from-pool");
+    expect(byProvider.xai!.provider?.custom).toBe(true);
+  });
+
+  it(".env wins over auth.json for the same provider", async () => {
+    await writeFile(join(dir, ".env"), "OPENROUTER_API_KEY=sk-or-from-env\n");
+    await writeFile(
+      join(dir, "auth.json"),
+      JSON.stringify({
+        credential_pool: {
+          openrouter: [{ auth_type: "api_key", priority: 0, access_token: "sk-or-from-pool" }],
+        },
+      }),
+    );
+    const items = await hermes.extractCredentials!();
+    const or = items.find((i) => i.credential.provider === "openrouter");
+    expect(or?.credential.key).toBe("sk-or-from-env");
+    expect(items).toHaveLength(1);
+  });
+
+  it("skips OAuth-only entries in the credential pool", async () => {
+    await writeFile(
+      join(dir, "auth.json"),
+      JSON.stringify({
+        credential_pool: {
+          "custom:foo.example": [
+            { auth_type: "oauth", priority: 0, access_token: "oauth-tok", base_url: "https://foo.example/v1" },
+          ],
+        },
+      }),
+    );
+    const items = await hermes.extractCredentials!();
+    expect(items).toEqual([]);
+  });
+
+  it("skips unknown hermes provider ids in the credential pool", async () => {
+    await writeFile(
+      join(dir, "auth.json"),
+      JSON.stringify({
+        credential_pool: {
+          "nous": [{ auth_type: "api_key", priority: 0, access_token: "should-be-skipped" }],
+        },
+      }),
+    );
+    const items = await hermes.extractCredentials!();
+    expect(items).toEqual([]);
+  });
 });
