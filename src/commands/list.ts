@@ -1,68 +1,113 @@
+import { listAgents } from "../agents/registry.js";
+import { runJson } from "../cli/json.js";
+import type { ListData, ProviderInfo } from "../cli/output.js";
+import { credentialSourceOf, daemonStateOf, proxyStateOf } from "../cli/state.js";
 import { readAgents } from "../config/agents.js";
 import { readConfig } from "../config/config.js";
 import { readCredentials } from "../config/credentials.js";
 import { readRoutes } from "../config/routes.js";
-import { listAgents } from "../agents/registry.js";
 import { getStatus } from "../daemon/lifecycle.js";
-import { resolveService } from "../daemon/service.js";
+import { listProviders } from "../providers/registry.js";
 
-export async function list(): Promise<void> {
+export async function list(opts: { json: boolean }): Promise<number> {
+  return runJson({
+    command: "list",
+    json: opts.json,
+    fetch: fetchListData,
+    printHuman: printList,
+  });
+}
+
+async function fetchListData(): Promise<ListData> {
   const cfg = await readConfig();
-  const [agentsState, routes, credentials, status] = await Promise.all([
+  const [agentsState, routes, credentialsStore, providersAll, proxy, daemon] = await Promise.all([
     readAgents(),
     readRoutes(),
     readCredentials(),
+    listProviders(),
     getStatus(cfg.port),
+    daemonStateOf(),
   ]);
+  const credByProvider = new Map(credentialsStore.providers.map((c) => [c.provider, c]));
+
+  const agents = listAgents().map((spec) => {
+    const conn = agentsState.connected[spec.id];
+    return {
+      id: spec.id,
+      connected: !!conn,
+      shimPath: conn?.shimPath ?? null,
+    };
+  });
+
+  const providers: ProviderInfo[] = providersAll.map((p) => {
+    const cred = credByProvider.get(p.id);
+    return {
+      id: p.id,
+      protocol: p.protocol,
+      baseUrl: p.originBaseUrl,
+      isBuiltin: !p.custom,
+      isCustom: !!p.custom,
+      hasCredentials: !!cred,
+      credentialSource: credentialSourceOf(cred),
+      knownModels: null,
+    };
+  });
+
+  const routeEntries = Object.entries(routes.routes).map(([agent, r]) => ({
+    agent: agent as ListData["routes"][number]["agent"],
+    target: { provider: r.provider, model: r.model },
+  }));
+
+  return {
+    proxy: proxyStateOf(proxy, cfg.port, cfg.host),
+    daemon,
+    agents,
+    providers,
+    routes: routeEntries,
+  };
+}
+
+function printList(data: ListData): void {
+  const specs = listAgents();
+  const byId = new Map(specs.map((s) => [s.id, s]));
+  const routesByAgent = new Map(data.routes.map((r) => [r.agent, r.target]));
 
   console.log("Agents");
-  for (const spec of listAgents()) {
-    const conn = agentsState.connected[spec.id];
-    const route = routes.routes[spec.id];
-    if (!conn) {
-      console.log(`  ${spec.displayName.padEnd(16)} not connected`);
+  for (const a of data.agents) {
+    const displayName = byId.get(a.id)?.displayName ?? a.id;
+    if (!a.connected) {
+      console.log(`  ${displayName.padEnd(16)} not connected`);
       continue;
     }
-    const target = route ? `${route.provider}/${route.model}` : "no route";
-    console.log(`  ${spec.displayName.padEnd(16)} connected → ${target}`);
+    const target = routesByAgent.get(a.id);
+    const routeStr = target ? `${target.provider}/${target.model}` : "no route";
+    console.log(`  ${displayName.padEnd(16)} connected → ${routeStr}`);
   }
 
   console.log("");
   console.log("Providers");
-  if (credentials.providers.length === 0) {
+  const configured = data.providers.filter((p) => p.hasCredentials);
+  if (configured.length === 0) {
     console.log("  (none configured)");
   } else {
-    for (const cred of credentials.providers) {
-      const source = cred.key
-        ? "api_key"
-        : cred.access
-          ? "oauth"
-          : cred.keyRef
-            ? `${cred.keyRef.source}:${cred.keyRef.id}`
-            : "?";
-      console.log(`  ${cred.provider.padEnd(16)} ${source}`);
+    for (const p of configured) {
+      const tag = p.isCustom ? " (custom)" : "";
+      console.log(`  ${p.id.padEnd(16)} ${p.credentialSource ?? "—"}${tag}`);
     }
   }
 
   console.log("");
   console.log("Proxy");
-  if (status.running) {
-    console.log(`  http://${cfg.host}:${cfg.port}   running (pid=${status.pid})`);
+  if (data.proxy.running) {
+    console.log(`  ${data.proxy.url}   running (pid=${data.proxy.pid})`);
   } else {
-    console.log(`  http://${cfg.host}:${cfg.port}   not running`);
+    console.log(`  ${data.proxy.url}   not running`);
   }
+  console.log(`  supervision:  ${formatDaemon(data.daemon)}`);
+}
 
-  let daemonLine = "  supervision:  not available on this platform";
-  try {
-    const svc = resolveService();
-    const svcStatus = await svc.status();
-    if (!svcStatus.installed) {
-      daemonLine = `  supervision:  lazy on-demand (run \`thomas daemon install\` for persistence)`;
-    } else {
-      daemonLine = `  supervision:  ${svc.platformLabel} ${svcStatus.running ? "active" : "inactive"}`;
-    }
-  } catch {
-    // unsupported platform
-  }
-  console.log(daemonLine);
+function formatDaemon(d: ListData["daemon"]): string {
+  if (d.platform === "unsupported") return "not available on this platform";
+  if (!d.installed) return "lazy on-demand (run `thomas daemon install` for persistence)";
+  return `${d.platform} ${d.running ? "active" : "inactive"}`;
 }

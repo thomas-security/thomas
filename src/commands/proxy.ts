@@ -1,4 +1,7 @@
 import { unlink } from "node:fs/promises";
+import { runJson } from "../cli/json.js";
+import type { ProxyStatusData } from "../cli/output.js";
+import { proxyStateOf } from "../cli/state.js";
 import { readConfig } from "../config/config.js";
 import { paths } from "../config/paths.js";
 import { ensureRunning, getStatus, stop } from "../daemon/lifecycle.js";
@@ -23,7 +26,7 @@ export async function proxyServe(portOverride?: number): Promise<never> {
   });
 }
 
-export async function proxyEnsure(portOverride?: number): Promise<number> {
+export async function proxyStart(portOverride?: number): Promise<number> {
   const cfg = await readConfig();
   const port = portOverride ?? cfg.port;
   const status = await ensureRunning(port);
@@ -32,15 +35,27 @@ export async function proxyEnsure(portOverride?: number): Promise<number> {
   return 1;
 }
 
-export async function proxyStatus(): Promise<number> {
+export async function proxyStatus(opts: { json: boolean }): Promise<number> {
+  return runJson({
+    command: "proxy",
+    json: opts.json,
+    fetch: fetchProxyStatus,
+    printHuman: printProxyStatus,
+  });
+}
+
+async function fetchProxyStatus(): Promise<ProxyStatusData> {
   const cfg = await readConfig();
   const status = await getStatus(cfg.port);
-  if (status.running) {
-    console.log(`running  pid=${status.pid}  port=${status.port}`);
-    return 0;
+  return proxyStateOf(status, cfg.port, cfg.host);
+}
+
+function printProxyStatus(s: ProxyStatusData): void {
+  if (s.running) {
+    console.log(`running  pid=${s.pid}  port=${s.port}`);
+  } else {
+    console.log(`not running  port=${s.port}`);
   }
-  console.log(`not running  (${status.reason})`);
-  return 1;
 }
 
 export async function proxyStop(): Promise<number> {

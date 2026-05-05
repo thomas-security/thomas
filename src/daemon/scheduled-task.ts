@@ -7,7 +7,7 @@ export class ScheduledTaskService implements ThomasService {
 
   install(): Promise<void> {
     throw new Error(
-      "Windows daemon supervision is not implemented in v0.1.0. Run `thomas proxy ensure` after each login, or use Task Scheduler manually.",
+      "Windows daemon supervision is not implemented in v0.1.0. Run `thomas proxy start` after each login, or use Task Scheduler manually.",
     );
   }
 

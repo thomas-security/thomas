@@ -13,8 +13,10 @@ export async function readSnapshot(agentId: AgentId): Promise<AgentSnapshot | un
   return value ?? undefined;
 }
 
-export async function writeSnapshot(snapshot: AgentSnapshot): Promise<void> {
-  await writeJsonAtomic(snapshotPath(snapshot.agentId), snapshot);
+export async function writeSnapshot(snapshot: AgentSnapshot): Promise<string> {
+  const path = snapshotPath(snapshot.agentId);
+  await writeJsonAtomic(path, snapshot);
+  return path;
 }
 
 export async function deleteSnapshot(agentId: AgentId): Promise<void> {

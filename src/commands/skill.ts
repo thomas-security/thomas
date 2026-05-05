@@ -5,53 +5,96 @@ import { fileURLToPath } from "node:url";
 import { fileExists } from "../agents/detect-helpers.js";
 import { getAgent } from "../agents/registry.js";
 import type { AgentId } from "../agents/types.js";
+import { ThomasError, runJson } from "../cli/json.js";
+import type { SkillInstallData, SkillRemoveData } from "../cli/output.js";
 import { home } from "../config/paths.js";
 
-const SKILL_DIRS: Partial<Record<AgentId, string>> = {
-  "claude-code": home(".claude", "skills", "thomas"),
+// Relative skill-dir segments per agent. Resolved against the user's home
+// at call time (via `home()`), not at module load — tests can override HOME.
+const SKILL_DIR_SEGMENTS: Partial<Record<AgentId, readonly string[]>> = {
+  "claude-code": [".claude", "skills", "thomas"],
 };
 
-export async function skillInstall(agentId: string): Promise<number> {
+function skillDirFor(id: AgentId): string | undefined {
+  const segs = SKILL_DIR_SEGMENTS[id];
+  return segs ? home(...segs) : undefined;
+}
+
+export async function skillInstall(
+  agentId: string,
+  opts: { json: boolean },
+): Promise<number> {
+  return runJson({
+    command: "skill.install",
+    json: opts.json,
+    fetch: () => doSkillInstall(agentId),
+    printHuman: (d) => {
+      console.log(`Installed thomas skill → ${d.path}`);
+      console.log("Restart your agent's session for it to pick up the skill.");
+    },
+  });
+}
+
+async function doSkillInstall(agentId: string): Promise<SkillInstallData> {
   const spec = getAgent(agentId);
-  if (!spec) {
-    console.error(`thomas: unknown agent '${agentId}'`);
-    return 1;
-  }
-  const target = SKILL_DIRS[spec.id];
+  if (!spec) throw unknownAgent(agentId);
+  const target = skillDirFor(spec.id);
   if (!target) {
-    console.error(`thomas: skill install for '${agentId}' is not supported in v0.1.0.`);
-    console.error("Copy SKILL.md manually from https://github.com/trustunknown/thomas");
-    return 1;
+    throw new ThomasError({
+      code: "E_INVALID_ARG",
+      message: `skill install for '${agentId}' is not supported in v0.1.0`,
+      remediation:
+        "Copy SKILL.md manually from https://github.com/trustunknown/thomas",
+      details: { agent: agentId },
+    });
   }
   const source = locateSkillSource();
   if (!source || !(await fileExists(source))) {
-    console.error("thomas: SKILL.md not found in package. Reinstall thomas?");
-    return 1;
+    throw new ThomasError({
+      code: "E_INTERNAL",
+      message: "SKILL.md not found in package",
+      remediation: "Reinstall thomas",
+    });
   }
   await mkdir(target, { recursive: true });
   await copyFile(source, join(target, "SKILL.md"));
-  console.log(`Installed thomas skill → ${target}/SKILL.md`);
-  console.log("Restart your agent's session for it to pick up the skill.");
-  return 0;
+  return { agent: spec.id, path: join(target, "SKILL.md") };
 }
 
-export async function skillRemove(agentId: string): Promise<number> {
-  const target = SKILL_DIRS[agentId as AgentId];
+export async function skillRemove(
+  agentId: string,
+  opts: { json: boolean },
+): Promise<number> {
+  return runJson({
+    command: "skill.remove",
+    json: opts.json,
+    fetch: () => doSkillRemove(agentId),
+    printHuman: (d) => {
+      if (d.removed) console.log(`Removed thomas skill from ${d.path}`);
+      else console.log(`No thomas skill installed at ${d.path}`);
+    },
+  });
+}
+
+async function doSkillRemove(agentId: string): Promise<SkillRemoveData> {
+  const target = skillDirFor(agentId as AgentId);
   if (!target) {
-    console.error(`thomas: skill remove for '${agentId}' is not supported.`);
-    return 1;
+    throw new ThomasError({
+      code: "E_INVALID_ARG",
+      message: `skill remove for '${agentId}' is not supported`,
+      details: { agent: agentId },
+    });
   }
+  const id = agentId as AgentId;
   if (!existsSync(target)) {
-    console.log(`No thomas skill installed at ${target}.`);
-    return 0;
+    return { agent: id, path: target, removed: false };
   }
   await rm(target, { recursive: true, force: true });
-  console.log(`Removed thomas skill from ${target}`);
-  return 0;
+  return { agent: id, path: target, removed: true };
 }
 
 export async function isSkillInstalled(agentId: AgentId): Promise<boolean> {
-  const target = SKILL_DIRS[agentId];
+  const target = skillDirFor(agentId);
   if (!target) return false;
   return fileExists(join(target, "SKILL.md"));
 }
@@ -67,4 +110,13 @@ function locateSkillSource(): string | undefined {
     cur = parent;
   }
   return undefined;
+}
+
+function unknownAgent(id: string): ThomasError {
+  return new ThomasError({
+    code: "E_AGENT_NOT_FOUND",
+    message: `unknown agent '${id}'`,
+    remediation: "Run `thomas doctor` to see installed agents",
+    details: { requested: id, known: ["claude-code", "codex", "openclaw", "hermes"] },
+  });
 }
