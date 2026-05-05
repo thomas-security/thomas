@@ -1,49 +1,318 @@
 ---
 name: thomas
-description: Universal adapter between AI agents and model providers. Use thomas to discover installed AI agents on a host, wire them through a local proxy, and switch which model provider any agent uses without editing the agent's own config.
+description: Local proxy that lets any AI agent on this machine (Claude Code, Codex CLI, OpenClaw, Hermes Agent) use any model provider. Use thomas to discover installed agents, see what models they're using, switch providers, and manage credentials — without editing the agent's own config.
 ---
 
 # thomas
 
-`thomas` is a CLI that lets any AI agent on a host (Claude Code, Codex CLI, OpenClaw, hermes-agent) talk to any model provider through a single local proxy.
+`thomas` is a personal/solo CLI on the user's machine. It is single-user — never suggest team workflows.
 
-## When to use
+**Always pass `--json` to every command** when driving thomas programmatically. Both reads (`status`, `doctor`, `list`, `providers`, `daemon status`, `proxy status`) and writes (`connect`, `disconnect`, `route`, `providers add/remove/register/unregister`, `daemon install/uninstall`, `skill install/remove`) emit the same JSON envelope. Human-formatted text is for direct terminal use only.
 
-Use thomas when the user wants to:
-- See which AI agents are installed on this machine and what credentials they have. → `thomas doctor`
-- Make an agent use a different model provider than the one it was configured with. → `thomas connect <agent>` then `thomas route <agent> <provider/model>`
-- Reuse credentials already on the host (e.g., the local Claude CLI keychain entry) for a different agent.
-- Stop routing an agent through thomas, restoring its original configuration. → `thomas disconnect <agent>`
+## Output contract
 
-## Commands
+JSON output is wrapped in a stable envelope:
 
-| Command | Purpose |
-| --- | --- |
-| `thomas doctor` | Read-only scan: which agents are installed, where their config lives, what credential sources they have. Always start here. |
-| `thomas connect <agent>` | Install a PATH shim for the agent so its requests go to thomas's proxy. Imports the agent's existing credentials by default. |
-| `thomas connect <agent> --no-import` | Install shim only; do not pull credentials from the agent. |
-| `thomas connect <agent> --no-proxy` | Pull credentials into thomas's store, but do not install a shim. |
-| `thomas disconnect <agent>` | Remove the shim. The agent's original config is untouched and resumes working. |
-| `thomas route <agent> <provider/model>` | Change which model an agent uses. Does not touch the agent. |
-| `thomas list` | Current state: connected agents, configured providers, active routes, proxy status. |
-| `thomas skill install <agent>` | Install this skill into the named agent's skill directory so the agent can drive thomas for the user. |
+```json
+{
+  "schemaVersion": 1,
+  "command": "status",
+  "generatedAt": "2026-05-03T12:00:00.000Z",
+  "data": { /* command-specific shape */ }
+}
+```
 
-## Key design facts (so you don't have to guess)
+On error:
 
-- thomas **never modifies the agent's own config files**. It works by putting a shim in `$HOME/.thomas/bin/<agent>` that runs earlier in PATH than the real binary, sets the right env vars, and execs the real binary. If thomas is uninstalled, the shim disappears and the original agent works as before.
-- The proxy listens on `http://127.0.0.1:51168` (configurable). It exposes `/messages` for Anthropic-shaped clients and `/v1/chat/completions` for OpenAI-shaped clients.
-- Credentials are stored in `~/.thomas/credentials.json` (plaintext JSON, same scheme as openclaw — supports `keyRef` for users who want to point to a vault/env var instead).
-- Routes (`agent → provider/model`) live in `~/.thomas/routes.json`.
+```json
+{
+  "schemaVersion": 1,
+  "command": "...",
+  "generatedAt": "...",
+  "error": { "code": "E_...", "message": "...", "remediation": "..." }
+}
+```
 
-## How to drive thomas on the user's behalf
+Always check `error` first. Schemas are defined in `src/cli/output.ts` of the thomas repo — fetch that file when you need an exhaustive field list.
 
-1. Run `thomas doctor` first to see what's on the host. Show the output to the user verbatim.
-2. If the user wants to switch an agent's model, run `thomas connect <agent>` (defaults are usually right), then `thomas route <agent> <provider/model>`.
-3. After any `connect`, the user should restart their agent's terminal session so the new shim is on PATH.
-4. If anything misbehaves, run `thomas list` to see the current state and `thomas disconnect <agent>` to revert.
+Write subcommands use dotted command names in the envelope: `"providers.add"`, `"providers.remove"`, `"providers.register"`, `"providers.unregister"`, `"daemon.install"`, `"daemon.uninstall"`, `"skill.install"`, `"skill.remove"`. Top-level writes are just `"connect"`, `"disconnect"`, `"route"`.
 
-## Troubleshooting hints
+Note: a write command targeting absent state (e.g. `disconnect` an agent that wasn't connected, `providers remove` a provider with no key) is **not an error** — it returns `data` with a `wasConnected: false` / `removed: false` flag and exit code 0. Errors (exit 1) are reserved for validation failures and unrecoverable conditions.
 
-- "Shim not on PATH" → the user's shell rc must include `$HOME/.thomas/bin` early in `PATH`. `thomas connect` prints the line to add.
-- "Proxy not running" → the shim auto-starts the proxy daemon. If it failed, `~/.thomas/proxy.log` has the reason.
-- "Agent still uses old credentials" → the agent process was started before the shim was installed. Restart the agent.
+## Recipes by user intent
+
+### "Which agents are on my machine and what models are they using?"
+
+```sh
+thomas status --json
+```
+
+Read `data.agents[]`:
+- `connected: false` — agent installed but not wired through thomas (using its original config)
+- `connected: true, effective: {provider, model}` — using that model via thomas
+- `connected: true, effective: null` — connected but no route configured
+
+`data.proxy.running` tells you if the thomas proxy itself is up.
+
+### "Make [agent] use cheap model after spending $N/day on expensive one"
+
+```sh
+thomas policy set <agent> --primary <prov/model> [--at <usd>=<prov/model>]... [--failover-to <prov/model>] --json
+```
+
+Example: claude-code uses Opus normally; switches to Haiku once today's spend ≥ $5; switches to DeepSeek once ≥ $10; AND if any upstream returns a retryable error (5xx/429/timeout), retry on OpenRouter:
+
+```sh
+thomas policy set claude-code \
+  --primary anthropic/claude-opus-4-7 \
+  --at 5=anthropic/claude-haiku-4-5 \
+  --at 10=deepseek/deepseek-chat \
+  --failover-to openrouter/anthropic/claude-opus-4 --json
+```
+
+`--at` is for **cost** (cascade by daily spend). `--failover-to` is for **reliability** (one-shot retry on transient errors). They're independent — set either or both.
+
+The proxy applies this on every request: actual model used = `effective` in `thomas status --json` (not `route`). `data.policies[].currentSpendDay` shows today's spend; `currentEffective` shows what's running right now; `currentReason` explains the decision in one line. When a failover fires, the run record will have `failovers: 1` and a `failoverNote` explaining what happened — visible via `thomas explain --run <id>`.
+
+To inspect: `thomas policy --json`. To remove: `thomas policy clear <agent> --json`.
+
+Cost is computed from `runs.jsonl` per UTC day. Models without a price entry contribute nothing — confirm pricing exists for the cascade targets via `runs --json` (records will have `spend: null` if not).
+
+### "What's a good model setup for [agent] under $N/day?"
+
+```sh
+thomas recommend --agent <id> [--budget-day <usd>] [--preference quality|balanced|cost] --json
+```
+
+Returns up to 3 ranked `data.suggestions[]`. Each has:
+- `rationale` — one-sentence human-readable explanation, relay verbatim
+- `policy` — the concrete primary/fallback/cascade structure
+- `estimatedSpendDay` — projected USD/day at the user's last 7-day volume; **`null` means there's no run history yet** (tell user to use thomas a bit, then re-run recommend)
+- `applyCommand` — executable shell command (`thomas route ...` or `thomas policy set ...`); show to user before running, then exec on confirmation
+
+Default ordering is `balanced` (cascade first as the compromise). `quality` puts pure-premium first; `cost` puts pure-cheap first. Default budget-day is half of the projected premium daily cost — so if the user gives no budget, the cascade trigger is data-driven.
+
+### "Add a price for [provider/model] thomas doesn't know" or "Override the built-in price"
+
+```sh
+thomas prices [--json]                                                # show all known prices
+thomas prices set <provider/model> --input <usd-per-M> --output <usd-per-M> [--json]
+thomas prices unset <provider/model> [--json]                         # remove an overlay entry
+```
+
+Use this for **OpenRouter routes**, **vLLM endpoints**, or any model thomas's hardcoded table doesn't cover. Without an overlay entry, runs through that model log `cost: null`. With one, cascade decisions and `recommend` cost projections also start working for that model.
+
+`thomas prices --json`'s `data.prices[]` has `source: "builtin" | "overlay"` so the agent can tell what's authoritative. `set` returns `overridesBuiltin: true` if the user is overriding a known model (warn them — usually unintentional). `unset` only removes overlay entries; builtins are not removable.
+
+To make an overlay model **eligible for `thomas recommend`**, pass `--protocol openai|anthropic --tier premium|balanced|cheap`:
+
+```sh
+thomas prices set openrouter/super-opus --input 0.5 --output 1.0 \
+  --protocol anthropic --tier premium --json
+```
+
+Without these flags, the entry only powers cost computation. With them, `recommend` will treat it as a candidate. Common pattern: a cheap OpenRouter route to a premium model — tag it `tier=premium` and the recommender will suggest it over Anthropic's direct Opus.
+
+### "Why did this run cost so much / fail?" or "How is [agent] doing today?"
+
+```sh
+thomas explain --run <runIdOrPrefix> --json    # one specific run
+thomas explain --agent <id> --json             # agent's current state + today's spend
+```
+
+Returns `{ subject: {type, id}, narrative, facts[] }`. Use `narrative` as a one-paragraph human answer (already self-contained — relay verbatim or reword for the user). Use `facts[]` if the user wants details: each has a `kind` (`route` / `policy-applied` / `cascade` / `cost` / `error`) and a `detail` string.
+
+`--run` accepts a UUID prefix (8 chars usually unique enough). For `--agent`, the narrative covers: connected status, static route, active policy + cascade decision (post-spend), today's run count + spend, last error if any. Matches what the user actually asks ("how's openclaw doing").
+
+### "What did my agents spend / how many tokens did they use?"
+
+```sh
+thomas runs --json [--agent <id>] [--since <iso>] [--limit <N>]
+```
+
+Returns `data.runs[]` newest-first. Each entry has `tokens.{input,output}`, `spend` (USD; **`null` means the model has no known price** — relay as "cost unknown", not "free"), `durationMs`, `status`, `modelsUsed[]`. Default limit 20. Use `--agent claude-code` for one agent, `--since 2026-05-01` for a date window.
+
+For "what's expensive", sum `data.runs[].spend ?? 0` after filtering null. For "how long do my Claude runs take", inspect `durationMs`.
+
+By default, `runs` groups HTTP requests sharing the same `X-Thomas-Run-Id` header into one logical task — `modelCalls > 1` means the agent issued multiple model calls under one run-id. Use `--per-call` to see raw HTTP-level rows. `tokens` and `spend` are sums; `failovers` is the count across all calls.
+
+### Sending `X-Thomas-Run-Id` from your own agent
+
+If you're building an agent on top of thomas (rather than driving an existing one), set `X-Thomas-Run-Id: <stable-task-id>` on every request belonging to one user task. Thomas groups them in `runs` and `explain --run`, so cost and token totals reflect the whole task — not just one call. The id is opaque (UUID, hash of the user prompt, anything stable). Without the header thomas generates a per-request UUID and each call shows up as its own run.
+
+Token counts come from upstream `usage` fields. Anthropic always emits them. For OpenAI-protocol upstreams, thomas auto-injects `stream_options.include_usage = true` on streaming requests so the final SSE chunk carries token counts — the user's SDK doesn't need to set it. If a request explicitly opts out (`include_usage: false`), thomas respects that, and `tokens` will be 0 / `spend` will be null for those runs.
+
+### "More detail about installed agents — binaries, configs, credentials"
+
+```sh
+thomas doctor --json [--check]
+```
+
+Returns `data.agents[]` with `binaryPath`, `configPath`, `connectMode` (`shim-env` vs `config-file`), `credentials[]` (keychain / file / env), `skillInstalled`. Use this when the user is troubleshooting "why isn't [agent] picked up?".
+
+`data.providerHealth` is `null` unless `--check` is passed; with `--check`, thomas probes each provider that has credentials (one HTTP `GET /v1/models` per provider, ~4s timeout) and returns a `ProviderProbe[]` (same schema as connect's `providerProbes[]` — see ["Wire [agent]…" section](#user-content-wire-agent-through-thomas)). Use `--check` when the user reports "thomas can't reach <provider>" or "I keep getting 401 from <provider>" — it pinpoints whether the URL or the credential is wrong.
+
+### "Make [agent] use [provider/model]"
+
+Two-step:
+
+```sh
+thomas connect <agent> --json
+thomas route <agent> <provider>/<model> --json
+```
+
+`connect` returns `data` with `shimPath`, `credentialsImported[]`, `configMutated`, `snapshotPath`, `requiresShellReload`, `providerProbes[]`, and `notes[]` (relay each note to the user verbatim — they cover gotchas like the Claude Code OAuth limitation, plus any provider reachability warnings from probes). `requiresShellReload` is retained for schema stability but is now always `false`: a successful connect already implies `~/.thomas/bin` is on `$PATH` ahead of the original binary in the current shell.
+
+If `~/.thomas/bin` is **not** on `$PATH` (or appears after the agent's real binary), connect refuses with `error.code = "E_SHIM_NOT_ON_PATH"` and rolls back atomically — no shim, no config patch, no recorded connection. Relay `error.remediation` to the user verbatim (it includes the exact `export PATH=...` line for their shell rc) and ask them to start a new shell, then re-run `thomas connect <agent>`.
+
+**Provider reachability probes.** For every newly-imported provider, connect does a single `GET <baseUrl>/v1/models` and surfaces the result as `providerProbes[]`:
+
+```jsonc
+[{ "provider": "vllm", "ok": true,  "status": 200, "url": "https://...", "latencyMs": 142 }]
+[{ "provider": "vllm", "ok": false, "reason": "wrong_path",   "status": 404,  "url": "...", "message": "HTTP 404 at /v1/models",   "latencyMs": 87 }]
+[{ "provider": "vllm", "ok": false, "reason": "auth_failed",  "status": 401,  "url": "...", "message": "HTTP 401",                  "latencyMs": 95 }]
+[{ "provider": "vllm", "ok": false, "reason": "unreachable",  "status": null, "url": "...", "message": "fetch failed: ECONNREFUSED", "latencyMs": 12 }]
+[{ "provider": "vllm", "ok": false, "reason": "other",        "status": 503,  "url": "...", "message": "HTTP 503",                  "latencyMs": 33 }]
+```
+
+Probes are advisory — connect does NOT fail on probe issues (a provider may be intentionally offline, e.g. a local vllm). Each `ok: false` probe is also rendered as a one-line `note` for direct relay; agents can prefer the structured field for programmatic action. Treat `wrong_path` as a strong signal the user's `originBaseUrl` is incorrect; suggest `thomas providers register <id> --base-url <correct>`.
+
+`route` returns `data` with `previous` (prior route, may be null) and `current` (new route). Useful for confirming the change to the user.
+
+Before recommending a route, confirm the provider has credentials: run `thomas providers --json` and check `data.providers[].hasCredentials` for that provider id. If `false`, run `thomas providers add <provider> <key> --json` first.
+
+### "Restore [agent] to its original setup"
+
+```sh
+thomas disconnect <agent> --json
+```
+
+Removes the shim. The agent's own config is untouched; for openclaw (config-mode), thomas restores from a snapshot. Response: `{ agent, wasConnected, shimRemoved, configReverted }`. If `wasConnected: false`, no work was needed.
+
+### "Show me which providers I have keys for"
+
+```sh
+thomas providers --json
+```
+
+Read `data.providers[]`:
+- `hasCredentials: true` — user has a key (thomas does NOT return the key itself)
+- `credentialSource` — `"thomas-store"` | `"env"` | `"keychain"` | `null`
+- `isCustom: true` — user-registered provider (e.g. their own vLLM endpoint)
+
+### "Add an API key for [provider]"
+
+```sh
+thomas providers add <provider> <key> --json
+```
+
+If `<provider>` is not built-in or registered, returns `error.code = "E_PROVIDER_NOT_FOUND"`. Built-ins: `anthropic`, `openai`, `openrouter`, `kimi`, `deepseek`, `groq`. Response on success: `{ provider, replacedExisting }` — `replacedExisting: true` means the user already had a key and it was overwritten.
+
+To add a custom OpenAI/Anthropic-compatible endpoint first:
+
+```sh
+thomas providers register <id> --protocol <openai|anthropic> --base-url <url> --json
+thomas providers add <id> <key> --json
+```
+
+### "Is thomas running? Make it always-on."
+
+- Status: `thomas proxy status --json` → `data.running`
+- Persistent service: `thomas daemon install --json` → `{ platform, label, running }` (LaunchAgent on macOS, systemd user service on Linux)
+- Daemon state: `thomas daemon status --json`
+
+### "Install the thomas skill into [agent]"
+
+```sh
+thomas skill install <agent> --json
+```
+
+Currently supports claude-code (writes to `~/.claude/skills/thomas/`). Returns `{ agent, path }`. For unsupported agents returns `error.code = "E_INVALID_ARG"` with remediation pointing to manual install.
+
+## Driving thomas-cloud (optional SaaS)
+
+`thomas-cloud` is a separate hosted product for cost-cascade policies, multi-provider bundles, and run analytics. It's optional — local thomas works fine without it. When the user has a thomas-cloud account, the local CLI is the *only* way to drive it (federated design — Claude Code never holds the SaaS API key directly).
+
+### "Sign in to thomas-cloud"
+
+```sh
+thomas cloud login
+```
+
+Interactive (no `--json`): prints a verification URL + 8-char user code, polls `/v1/devices/poll` until the user approves in their browser, persists the device token to `~/.thomas/cloud.json`. The user must visit the URL and click Approve while signed in to thomas-cloud.
+
+Override the SaaS endpoint with `--base-url http://localhost:8000` (local dev) or `THOMAS_CLOUD_BASE_URL` env. Default is `https://thomas.trustunknown.com`.
+
+### "Am I signed in? What workspace am I attached to?"
+
+```sh
+thomas cloud whoami --json
+```
+
+Returns `{ loggedIn, baseUrl, workspaceId, deviceId, loggedInAt, lastSyncAt }`. Local-only — no network call. Use this when the user asks "what's my cloud state" without committing to a sync round-trip.
+
+### "Pull the latest policy / bundles from cloud"
+
+```sh
+thomas cloud sync --json
+```
+
+Returns `{ schemaVersion, policiesCount, bundlesCount, bindingsCount, providersCount, redactRulesVersion, syncedAt }`. Hits the cloud, writes the snapshot to `~/.thomas/cloud-cache.json` (the local proxy reads from this cache for policy decisions). When v1 ships, the snapshot is empty by design — this just exercises the wiring.
+
+### "Sign out of cloud"
+
+```sh
+thomas cloud logout --json
+```
+
+Returns `{ wasLoggedIn }`. Local-only: clears `~/.thomas/cloud.json`. Idempotent — second call returns `wasLoggedIn: false`.
+
+## Critical design facts
+
+- **thomas does not modify the agent's own config** for shim-env agents (claude-code, codex, hermes). It works by putting a wrapper at `~/.thomas/bin/<binary>` earlier on PATH that exports `*_BASE_URL` env vars and execs the real binary.
+- **OpenClaw is the exception** — it doesn't read base-URL env vars, so thomas mutates `~/.openclaw/openclaw.json` additively, snapshots prior values to `~/.thomas/snapshots/openclaw.json`, and `disconnect` reverts cleanly.
+- **Single-user scope.** No multi-tenant, no RBAC, no shared state. Don't suggest team workflows — explicit non-goal.
+- **Claude Code OAuth tokens don't work for direct Anthropic API.** If the user only has the OAuth (from `claude login`), `thomas connect claude-code` warns them — they need an `sk-ant-` API key for actual passthrough. Run `thomas providers add anthropic sk-ant-…` after.
+
+## Error codes
+
+When `error.code` is set in JSON output, relay `error.remediation` to the user verbatim when present.
+
+| Code | Meaning |
+|---|---|
+| `E_INVALID_ARG` | Bad CLI arg |
+| `E_AGENT_NOT_FOUND` | Agent id unknown to thomas (`details.known` lists valid ones) |
+| `E_AGENT_NOT_INSTALLED` | Agent id valid but binary not found |
+| `E_AGENT_NOT_CONNECTED` | Agent never ran `thomas connect` |
+| `E_PROVIDER_NOT_FOUND` | Provider id not registered |
+| `E_PROVIDER_AUTH` | Provider rejected the credentials |
+| `E_PROVIDER_UNREACHABLE` | Network failure reaching the provider |
+| `E_CREDENTIAL_MISSING` | Route points at a provider with no key |
+| `E_PROXY_NOT_RUNNING` | thomas proxy is down — try `thomas proxy start` or `thomas daemon install` |
+| `E_PORT_IN_USE` | Proxy can't bind its port |
+| `E_CONFIG_CONFLICT` | Config-mode connect would clobber a non-thomas entry the user wrote |
+| `E_SHIM_NOT_ON_PATH` | `~/.thomas/bin` not on `$PATH` (or shadowed by the original binary). Connect rolled back. `details.reason` is `"missing"` or `"shadowed"`; `details.binDir` and `details.pathEntries` show the gap. Relay `error.remediation` verbatim. |
+| `E_SNAPSHOT_MISSING` | Disconnect can't find the snapshot to restore from |
+| `E_CLOUD_NOT_LOGGED_IN` | `thomas cloud sync` (or anything that requires the device token) before `thomas cloud login` ran. Suggest `thomas cloud login`. |
+| `E_CLOUD_UNAUTHORIZED` | thomas-cloud rejected the device token (revoked, deleted workspace, etc.). Suggest `thomas cloud logout && thomas cloud login` to re-auth. |
+| `E_CLOUD_UNREACHABLE` | Network / DNS / 5xx from thomas-cloud. Suggest checking connectivity or `THOMAS_CLOUD_BASE_URL`. |
+| `E_CLOUD_TIMEOUT` | Login user-code expired (10 min) or sync request timed out. Re-run the same command. |
+| `E_INTERNAL` | Unexpected — show the message |
+
+Full list in `src/cli/output.ts`.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Action |
+|---|---|---|
+| `connect` returns `E_SHIM_NOT_ON_PATH` | `~/.thomas/bin` missing from `$PATH` or shadowed | Relay `error.remediation` (it has the exact `export PATH` line + correct rc file); ask user to start a new shell and re-run `connect` |
+| Proxy not running | daemon failed or never started | `thomas proxy start`, or `thomas daemon install` for persistence; check `~/.thomas/proxy.log` |
+| Agent still uses old creds after connect | agent process started before the shim | restart that agent's terminal/session |
+| connect succeeded but agent fails to call API | OAuth token only (no API key) | run `thomas providers add anthropic sk-ant-…` |
+
+## Difference between `status` and `list`
+
+- `status` — operational dashboard. Per-agent **effective** model (post-cascade once L3 lands), proxy state. Use this for "what's going on right now".
+- `list` — configured state. All providers, all routes, supervision state. Use this for "what's wired up".
+
+When in doubt, start with `thomas status --json`.
