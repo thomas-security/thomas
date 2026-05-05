@@ -10,7 +10,6 @@ import { getProvider, type ProviderSpec } from "../providers/registry.js";
 import type { AgentId, AgentSpec, Protocol } from "../agents/types.js";
 import { decideForAgent } from "../policy/decide.js";
 import { shouldFailover } from "../policy/failover.js";
-import { getPolicy } from "../policy/store.js";
 import { computeCost } from "../runs/pricing.js";
 import { appendRun } from "../runs/store.js";
 import { StreamUsageWatcher, ZERO_USAGE, extractUsageFromBody, type Usage } from "../runs/usage.js";
@@ -65,15 +64,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   // Apply policy (cost cascade, etc.) — may rewrite provider+model.
+  // Cloud-backed cache takes precedence over local ~/.thomas/policies.json
+  // when the user is logged in to thomas-cloud; see src/policy/decide.ts.
   const decision = await decideForAgent(found.agentId as AgentId, {
     provider: route.provider,
     model: route.model,
   });
   const effective = decision.target;
-  const policyConfig =
-    decision.policyId === "cost-cascade"
-      ? await getPolicy(found.agentId as AgentId)
-      : undefined;
+  const policyConfig = decision.policy ?? undefined;
 
   const inboundBody = await readBody(req);
   const inboundPath = req.url ?? "";

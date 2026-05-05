@@ -257,7 +257,15 @@ Returns `{ loggedIn, baseUrl, workspaceId, deviceId, loggedInAt, lastSyncAt }`. 
 thomas cloud sync --json
 ```
 
-Returns `{ schemaVersion, policiesCount, bundlesCount, bindingsCount, providersCount, redactRulesVersion, syncedAt }`. Hits the cloud, writes the snapshot to `~/.thomas/cloud-cache.json` (the local proxy reads from this cache for policy decisions). When v1 ships, the snapshot is empty by design — this just exercises the wiring.
+Returns `{ schemaVersion, policiesCount, bundlesCount, bindingsCount, providersCount, redactRulesVersion, syncedAt }`. Hits the cloud, writes the snapshot to `~/.thomas/cloud-cache.json`.
+
+The local proxy's policy decision pipeline reads from this cache **before** the local `~/.thomas/policies.json` store. Resolution order on each request:
+
+1. cloud cache (if logged in to thomas-cloud and the workspace has a binding for this agent)
+2. local store (`thomas policy set` results)
+3. route fallback (`thomas route ...`)
+
+So a centrally-managed policy on thomas-cloud automatically takes effect once the user logs in + syncs; offline / pre-login users keep getting their local policies unchanged.
 
 ### "Sign out of cloud"
 

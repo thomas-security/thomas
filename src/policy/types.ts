@@ -29,4 +29,16 @@ export type PolicyDecision = {
   target: { provider: string; model: string };
   reason: string;
   policyId: PolicyConfig["id"] | null;
+  /**
+   * The full policy that produced this decision, if any. Lets callers reach
+   * for `failoverTo` (or future fields) without re-reading the store. Null
+   * when the decision was just "use the fallback target" (no policy bound).
+   */
+  policy: PolicyConfig | null;
+  /**
+   * Where the policy came from. "cloud" = pulled from ~/.thomas/cloud-cache.json.
+   * "local" = ~/.thomas/policies.json. "none" = no policy was bound.
+   * Surfaced for telemetry / debugging — not part of the decision logic.
+   */
+  source: "cloud" | "local" | "none";
 };
