@@ -161,7 +161,26 @@ thomas connect <agent> --json
 thomas route <agent> <provider>/<model> --json
 ```
 
-`connect` returns `data` with `shimPath`, `credentialsImported[]`, `configMutated`, `snapshotPath`, `requiresShellReload`, `providerProbes[]`, and `notes[]` (relay each note to the user verbatim — they cover gotchas like the Claude Code OAuth limitation, plus any provider reachability warnings from probes). `requiresShellReload` is retained for schema stability but is now always `false`: a successful connect already implies `~/.thomas/bin` is on `$PATH` ahead of the original binary in the current shell.
+`connect` returns `data` with `shimPath`, `credentialsImported[]`, `configMutated`, `snapshotPath`, `requiresShellReload`, `providerProbes[]`, `notes[]` (relay each note to the user verbatim — they cover gotchas like the Claude Code OAuth limitation, plus any provider reachability warnings from probes), and `restart` (see below). `requiresShellReload` is retained for schema stability but is now always `false`: a successful connect already implies `~/.thomas/bin` is on `$PATH` ahead of the original binary in the current shell.
+
+**Restarting the agent's daemon (`--restart-agent`)**. Pass `--restart-agent` to ask thomas to restart the agent's running process(es) so the new config is picked up immediately. Currently only **OpenClaw** has a restart hook (it has a long-running `GatewayService` daemon — config edits are ignored until that process reloads). Shim-env agents (claude-code, codex, hermes) have no daemon to restart; the next agent invocation in a fresh shell already picks up the shim, so the flag is a no-op for them.
+
+For openclaw on macOS specifically: `--restart-agent` runs `launchctl bootout && bootstrap` against the LaunchAgent plist. This is required when connect mutates the plist's `EnvironmentVariables` dict to inject `THOMAS_OPENCLAW_TOKEN` — `openclaw daemon restart` (which is `launchctl kickstart -k`) would only respawn the process without re-reading the plist, so the new token wouldn't reach the daemon. Without `--restart-agent` after connect, openclaw 401s every request. The flag's notes[] entry on connect/disconnect spells out the exact manual command if a user prefers to bootstrap themselves.
+
+The `data.restart` field shape:
+
+```jsonc
+// flag not passed (default)
+"restart": null
+// flag passed, agent has no restart hook (codex / hermes / claude-code)
+"restart": { "attempted": false, "ok": false, "method": "n/a", "message": "..." }
+// openclaw, daemon restart succeeded
+"restart": { "attempted": true, "ok": true,  "method": "openclaw daemon restart", "message": "...", "exitCode": 0, "durationMs": 412 }
+// openclaw, daemon restart failed (e.g. service not installed)
+"restart": { "attempted": true, "ok": false, "method": "openclaw daemon restart", "message": "...", "exitCode": 1 }
+```
+
+Restart failure does **not** fail the parent command — the connect/disconnect itself already succeeded; the user just has to restart the agent manually. The failure is also appended to `notes[]` for direct relay.
 
 If `~/.thomas/bin` is **not** on `$PATH` (or appears after the agent's real binary), connect refuses with `error.code = "E_SHIM_NOT_ON_PATH"` and rolls back atomically — no shim, no config patch, no recorded connection. Relay `error.remediation` to the user verbatim (it includes the exact `export PATH=...` line for their shell rc) and ask them to start a new shell, then re-run `thomas connect <agent>`.
 
@@ -187,7 +206,7 @@ Before recommending a route, confirm the provider has credentials: run `thomas p
 thomas disconnect <agent> --json
 ```
 
-Removes the shim. The agent's own config is untouched; for openclaw (config-mode), thomas restores from a snapshot. Response: `{ agent, wasConnected, shimRemoved, configReverted }`. If `wasConnected: false`, no work was needed.
+Removes the shim. The agent's own config is untouched; for openclaw (config-mode), thomas restores from a snapshot. Response: `{ agent, wasConnected, shimRemoved, configReverted, restart }`. If `wasConnected: false`, no work was needed. `disconnect` also accepts `--restart-agent` (same semantics as on `connect`) so OpenClaw's daemon picks up the now-reverted config without a manual restart.
 
 ### "Show me which providers I have keys for"
 
@@ -315,7 +334,7 @@ Full list in `src/cli/output.ts`.
 |---|---|---|
 | `connect` returns `E_SHIM_NOT_ON_PATH` | `~/.thomas/bin` missing from `$PATH` or shadowed | Relay `error.remediation` (it has the exact `export PATH` line + correct rc file); ask user to start a new shell and re-run `connect` |
 | Proxy not running | daemon failed or never started | `thomas proxy start`, or `thomas daemon install` for persistence; check `~/.thomas/proxy.log` |
-| Agent still uses old creds after connect | agent process started before the shim | restart that agent's terminal/session |
+| Agent still uses old creds after connect | agent process started before the shim | restart that agent's terminal/session, or pass `--restart-agent` (OpenClaw only — others reload on next process spawn) |
 | connect succeeded but agent fails to call API | OAuth token only (no API key) | run `thomas providers add anthropic sk-ant-…` |
 
 ## Difference between `status` and `list`

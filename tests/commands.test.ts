@@ -260,6 +260,8 @@ describe("disconnect (--json)", () => {
       wasConnected: false,
       shimRemoved: false,
       configReverted: false,
+      restart: null,
+      notes: [],
     });
   });
 });

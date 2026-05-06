@@ -7,15 +7,23 @@ import { openclaw } from "../src/agents/openclaw.js";
 describe("openclaw spec", () => {
   let dir: string;
   const originalHome = process.env.OPENCLAW_HOME;
+  const originalPlist = process.env.THOMAS_OPENCLAW_LAUNCHD_PLIST;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "thomas-openclaw-"));
     process.env.OPENCLAW_HOME = dir;
+    // Point the LaunchAgent plist override at a path that doesn't exist so
+    // applyConfig/revertConfig's plist mutation is a no-op during these tests.
+    // Without this, a contributor running `bun test` on macOS with openclaw
+    // installed would have their real LaunchAgent rewritten.
+    process.env.THOMAS_OPENCLAW_LAUNCHD_PLIST = join(dir, "no-such.plist");
   });
 
   afterEach(async () => {
     if (originalHome !== undefined) process.env.OPENCLAW_HOME = originalHome;
     else delete process.env.OPENCLAW_HOME;
+    if (originalPlist !== undefined) process.env.THOMAS_OPENCLAW_LAUNCHD_PLIST = originalPlist;
+    else delete process.env.THOMAS_OPENCLAW_LAUNCHD_PLIST;
     await rm(dir, { recursive: true, force: true });
   });
 

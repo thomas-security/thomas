@@ -6,12 +6,21 @@ import { home } from "../config/paths.js";
 import type { ProviderSpec } from "../providers/registry.js";
 import type { Protocol } from "./types.js";
 import { fileExists, tryGetVersion, whichBinary } from "./detect-helpers.js";
+import {
+  addThomasTokenToPlist,
+  launchAgentPlistPath,
+  plistExists,
+  reloadLaunchAgent,
+  removeThomasTokenFromPlist,
+} from "./openclaw-plist.js";
+import { runRestartCommand } from "./restart.js";
 import type {
   AgentSnapshot,
   AgentSpec,
   CredentialSource,
   DetectResult,
   ExtractedCredential,
+  RestartOutcome,
   ShimContext,
 } from "./types.js";
 
@@ -171,12 +180,45 @@ export const openclaw: AgentSpec = {
 
     await writeJsonAtomic(path, config);
 
+    // launchd doesn't inherit shell env, so the shim's THOMAS_OPENCLAW_TOKEN
+    // never reaches a LaunchAgent-managed openclaw daemon. Inject it directly
+    // into the plist's EnvironmentVariables dict. This is additive only — we
+    // touch exactly our key and (on revert) drop it again. Best-effort: a plist
+    // mutation failure does not fail connect (the user might run openclaw
+    // foreground, in which case the shim path already covers them).
+    await addThomasTokenToPlist(ctx.thomasToken).catch(() => undefined);
+
     return {
       agentId: "openclaw",
       takenAt: new Date().toISOString(),
       configFile: path,
       data: data as unknown as Record<string, unknown>,
     };
+  },
+
+  async restart(): Promise<RestartOutcome> {
+    // On darwin with a LaunchAgent install, prefer launchctl bootout+bootstrap
+    // over `openclaw daemon restart`. The latter uses `launchctl kickstart -k`,
+    // which only respawns the process — launchd keeps the previously-loaded
+    // plist EnvironmentVariables in memory, so any plist mutation we made in
+    // applyConfig (THOMAS_OPENCLAW_TOKEN) wouldn't take effect. bootout+
+    // bootstrap forces launchd to re-read the plist before relaunching.
+    if (process.platform === "darwin") {
+      const plist = launchAgentPlistPath();
+      if (await plistExists(plist)) {
+        return reloadLaunchAgent(plist);
+      }
+    }
+    const bin = await whichBinary("openclaw");
+    if (!bin) {
+      return {
+        attempted: true,
+        ok: false,
+        method: "openclaw daemon restart",
+        message: "openclaw binary not found on PATH",
+      };
+    }
+    return runRestartCommand([bin, "daemon", "restart"], "openclaw daemon restart");
   },
 
   async revertConfig(snapshot: AgentSnapshot): Promise<void> {
@@ -210,6 +252,12 @@ export const openclaw: AgentSpec = {
     }
 
     await writeJsonAtomic(path, config);
+
+    // Mirror image of applyConfig: drop our token from the plist. We don't
+    // need a plist snapshot because the mutation is single-key surgical —
+    // removeThomasTokenFromPlist only touches THOMAS_OPENCLAW_TOKEN (and the
+    // EnvironmentVariables dict if it ends up empty, which means we created it).
+    await removeThomasTokenFromPlist().catch(() => undefined);
   },
 };
 

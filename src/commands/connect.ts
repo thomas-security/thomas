@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { getAgent } from "../agents/registry.js";
-import type { AgentId, AgentSnapshot, AgentSpec } from "../agents/types.js";
+import type { AgentId, AgentSnapshot, AgentSpec, RestartOutcome } from "../agents/types.js";
 import { ThomasError, runJson } from "../cli/json.js";
 import type { ConnectData, ProviderProbe } from "../cli/output.js";
 import { recordConnect } from "../config/agents.js";
@@ -20,6 +20,7 @@ export type ConnectOptions = {
   agentId: string;
   noImport?: boolean;
   noProxy?: boolean;
+  restartAgent?: boolean;
   json: boolean;
 };
 
@@ -71,7 +72,7 @@ async function doConnect(opts: ConnectOptions): Promise<ConnectData> {
     importedProviders.length > 0 ? await probeProviders(importedProviders) : [];
   const providerProbes: ProviderProbe[] = probeResults.map(toWireProbe);
 
-  const notes = buildNotes(spec, importedProviders);
+  const notes = buildNotes(spec, importedProviders, !!opts.restartAgent);
   appendProbeNotes(notes, probeResults);
 
   if (opts.noProxy) {
@@ -84,6 +85,8 @@ async function doConnect(opts: ConnectOptions): Promise<ConnectData> {
       requiresShellReload: false,
       providerProbes,
       notes,
+      // --no-proxy means we didn't touch the agent's runtime; restart would be meaningless.
+      restart: null,
     };
   }
 
@@ -138,6 +141,8 @@ async function doConnect(opts: ConnectOptions): Promise<ConnectData> {
 
   await ensureRunning(cfg.port);
 
+  const restart = await maybeRestart(spec, opts.restartAgent, notes);
+
   // Only ask the user to reload PATH if binDir was already on PATH (i.e. the
   // shim wins) — that's the case where a fresh shell will pick it up. If
   // binDir wasn't on PATH we'd have rejected above with E_SHIM_NOT_ON_PATH.
@@ -150,7 +155,37 @@ async function doConnect(opts: ConnectOptions): Promise<ConnectData> {
     requiresShellReload: false,
     providerProbes,
     notes,
+    restart,
   };
+}
+
+/** Run spec.restart() if requested, append a human-readable note when relevant.
+ *  Failure here NEVER fails the parent command — the main path already succeeded;
+ *  restart is best-effort. The agent driving thomas reads the structured `restart`
+ *  field and decides what to do. */
+async function maybeRestart(
+  spec: AgentSpec,
+  requested: boolean | undefined,
+  notes: string[],
+): Promise<RestartOutcome | null> {
+  if (!requested) return null;
+  if (!spec.restart) {
+    const note = `--restart-agent ignored: ${spec.displayName} has no automated restart hook (shim-env agents are picked up on next process spawn — open a fresh shell or restart the agent manually).`;
+    notes.push(note);
+    return {
+      attempted: false,
+      ok: false,
+      method: "n/a",
+      message: note,
+    };
+  }
+  const outcome = await spec.restart();
+  if (!outcome.ok) {
+    notes.push(
+      `--restart-agent: ${outcome.message}. Connect itself succeeded; the daemon may already have restarted (timeouts in particular don't necessarily mean failure). If the agent still uses old config, run \`${spec.binaries[0]} daemon restart\` manually.`,
+    );
+  }
+  return outcome;
 }
 
 function toWireProbe(p: ProbeResult): ProviderProbe {
@@ -237,11 +272,25 @@ function guessShellRc(): string {
   return "your shell's rc file (~/.zshrc, ~/.bashrc, etc.)";
 }
 
-function buildNotes(spec: AgentSpec, importedProviders: string[]): string[] {
+function buildNotes(
+  spec: AgentSpec,
+  importedProviders: string[],
+  restartAgentFlag: boolean,
+): string[] {
   const notes: string[] = [];
   if (spec.id === "claude-code" && importedProviders.includes("anthropic")) {
     notes.push(
       "Claude Code stores an OAuth token, which Anthropic's public API does not accept. To actually proxy traffic, add an Anthropic API key with `thomas providers add anthropic <sk-ant-...>` then `thomas route claude-code <provider/model>`.",
+    );
+  }
+  // openclaw on macOS: plist was mutated to inject THOMAS_OPENCLAW_TOKEN.
+  // launchd caches EnvironmentVariables at service-load time, so a running
+  // LaunchAgent-managed daemon won't see the new var until the service is
+  // bootstrap'd. Without --restart-agent (which does that for them), the user
+  // is in a "config edited but daemon ignores it" limbo — flag it loudly.
+  if (spec.id === "openclaw" && process.platform === "darwin" && !restartAgentFlag) {
+    notes.push(
+      "OpenClaw daemon is still running with its previously-loaded environment. Pass `--restart-agent` (or run `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/ai.openclaw.gateway.plist && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.openclaw.gateway.plist`) so it picks up THOMAS_OPENCLAW_TOKEN — otherwise every openclaw request will 401.",
     );
   }
   return notes;
@@ -270,6 +319,9 @@ function printConnect(d: ConnectData, opts: ConnectOptions): void {
   }
   if (d.credentialsImported.length > 0) {
     console.log(`  imported: ${d.credentialsImported.join(", ")}`);
+  }
+  if (d.restart && d.restart.attempted) {
+    console.log(`  restart:  ${d.restart.ok ? "ok" : "FAILED"} (${d.restart.method})`);
   }
   console.log("");
   for (const note of d.notes) {

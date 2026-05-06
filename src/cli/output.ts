@@ -3,7 +3,9 @@
 // driving thomas via `--json` depend on this exact shape — see CLAUDE.md
 // "Operating model" and SKILL.md.
 
-import type { AgentId, Protocol } from "../agents/types.js";
+import type { AgentId, Protocol, RestartOutcome } from "../agents/types.js";
+
+export type { RestartOutcome };
 
 export type ProviderId = string;
 
@@ -191,6 +193,9 @@ export type ConnectData = {
   providerProbes: ProviderProbe[];
   // human-relayable warnings (e.g. OAuth-token-only, provider unreachable); always present, may be empty
   notes: string[];
+  // Populated only when --restart-agent was requested. null otherwise. attempted=false means
+  // the agent has no restart() implementation (e.g. shim-env-only agents like codex/hermes).
+  restart: RestartOutcome | null;
 };
 
 export type DisconnectData = {
@@ -199,6 +204,10 @@ export type DisconnectData = {
   wasConnected: boolean;
   shimRemoved: boolean;
   configReverted: boolean;
+  // Same shape and semantics as ConnectData.restart.
+  restart: RestartOutcome | null;
+  // Human-relayable warnings (same convention as ConnectData.notes). Always present, may be empty.
+  notes: string[];
 };
 
 export type RouteData = {

@@ -57,9 +57,14 @@ Usage:
                                         --check  also probe each provider's base URL (one HTTP call per
                                                  credentialed provider; surfaces wrong_path / unreachable / auth_failed)
   thomas connect <agent> [flags]      Wire an agent through thomas
-                                        --no-import   skip credential import
-                                        --no-proxy    import only, do not install shim
-  thomas disconnect <agent>           Remove the shim for an agent
+                                        --no-import      skip credential import
+                                        --no-proxy       import only, do not install shim
+                                        --restart-agent  ask the agent to restart its daemon
+                                                         (only effective for agents with a
+                                                         restart hook — currently OpenClaw)
+  thomas disconnect <agent> [flags]   Remove the shim for an agent
+                                        --restart-agent  ask the agent to restart so it
+                                                         reloads its (now-reverted) config
   thomas route <agent> <prov/model>   Switch which model an agent uses
   thomas list [--json]                Show full configured state (providers, routes, daemon)
   thomas providers [--json]           List provider credentials
@@ -181,6 +186,7 @@ async function main(): Promise<number> {
         options: {
           "no-import": { type: "boolean" },
           "no-proxy": { type: "boolean" },
+          "restart-agent": { type: "boolean" },
         },
         allowPositionals: true,
       });
@@ -190,14 +196,22 @@ async function main(): Promise<number> {
         agentId,
         noImport: values["no-import"],
         noProxy: values["no-proxy"],
+        restartAgent: values["restart-agent"],
         json,
       });
     }
 
     case "disconnect": {
-      const agentId = args[1];
+      const { positionals, values } = parseArgs({
+        args: args.slice(1),
+        options: {
+          "restart-agent": { type: "boolean" },
+        },
+        allowPositionals: true,
+      });
+      const agentId = positionals[0];
       if (!agentId) return usage("thomas disconnect <agent>");
-      return disconnect(agentId, { json });
+      return disconnect(agentId, { json, restartAgent: values["restart-agent"] });
     }
 
     case "route": {
