@@ -1,16 +1,23 @@
 // Append-only JSONL store at ~/.thomas/runs.jsonl. POSIX appendFile of small
 // records (< 4KB) is atomic, so concurrent proxy requests won't corrupt lines.
 // Reads are O(file): naive for v1 — fine for solo single-host volume.
+//
+// After a successful local append, we hand the record to the cloud uplink.
+// That call is fire-and-forget: the local file is the system of record, and
+// we don't want a slow / down cloud to slow the proxy hot path. See
+// src/cloud/runs-uplink.ts for the side-effect contract.
 
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { AgentId } from "../agents/types.js";
+import { enqueueRun } from "../cloud/runs-uplink.js";
 import { paths } from "../config/paths.js";
 import type { RunRecord } from "./types.js";
 
 export async function appendRun(record: RunRecord): Promise<void> {
   await mkdir(dirname(paths.runs), { recursive: true });
   await appendFile(paths.runs, JSON.stringify(record) + "\n", { mode: 0o600 });
+  enqueueRun(record);
 }
 
 export type ReadRunsOptions = {
