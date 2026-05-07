@@ -2,16 +2,17 @@ import { agents as agentRegistry } from "../agents/registry.js";
 import type { AgentId } from "../agents/types.js";
 import { ThomasError, runJson } from "../cli/json.js";
 import type {
-  CostCascadeRule,
+  CostCascadeRule as OutputCostCascadeRule,
   PolicyClearData,
   PolicyData,
   PolicySetData,
   PolicySnapshot,
 } from "../cli/output.js";
-import { decide, spendSinceStartOfDay } from "../policy/decide.js";
-import { clearPolicy, readPolicies, setPolicy } from "../policy/store.js";
-import type { CostCascadePolicy } from "../policy/types.js";
 import { parseRouteSpec } from "../config/routes.js";
+import { getMeter } from "../metering/registry.js";
+import { decide } from "../policy/decide.js";
+import { clearPolicy, readPolicies, setPolicy } from "../policy/store.js";
+import type { CostCascadePolicy, CostCascadeRule } from "../policy/types.js";
 
 const KNOWN_AGENTS: AgentId[] = Object.keys(agentRegistry) as AgentId[];
 
@@ -30,15 +31,16 @@ async function fetchPolicies(): Promise<PolicyData> {
   for (const [agent, policy] of Object.entries(store.policies)) {
     if (!policy) continue;
     const agentId = agent as AgentId;
-    const spend = await spendSinceStartOfDay(agentId);
-    const decision = decide(policy, spend);
+    const usage = await getMeter(agentId).usageInWindow(agentId, "day");
+    const decision = decide(policy, usage);
     snapshots.push({
       agent: agentId,
       id: policy.id,
       primary: policy.primary,
-      cascade: policy.cascade,
+      cascade: policy.cascade.map(toOutputRule),
       failoverTo: policy.failoverTo ?? null,
-      currentSpendDay: spend,
+      currentSpendDay: usage.spend,
+      currentCallsDay: usage.calls,
       currentEffective: decision.target,
       currentReason: decision.reason,
     });
@@ -55,15 +57,15 @@ function printPolicies(data: PolicyData): void {
     console.log(`${p.agent}  (${p.id})`);
     console.log(`  primary:  ${p.primary.provider}/${p.primary.model}`);
     for (const rule of p.cascade) {
-      console.log(
-        `  at ≥ $${rule.triggerSpendDay.toFixed(2)}/day → ${rule.fallback.provider}/${rule.fallback.model}`,
-      );
+      console.log(`  ${formatRule(rule)} → ${rule.fallback.provider}/${rule.fallback.model}`);
     }
     if (p.failoverTo) {
       console.log(`  on error  → ${p.failoverTo.provider}/${p.failoverTo.model}`);
     }
     const spend = p.currentSpendDay !== null ? `$${p.currentSpendDay.toFixed(4)}` : "?";
-    console.log(`  today spent ${spend}; effective: ${p.currentEffective.provider}/${p.currentEffective.model}`);
+    console.log(
+      `  today: ${p.currentCallsDay} calls, ${spend} spent; effective: ${p.currentEffective.provider}/${p.currentEffective.model}`,
+    );
     console.log("");
   }
 }
@@ -73,6 +75,7 @@ export type PolicySetOptions = {
   agentId: string;
   primary: string;
   cascade: string[]; // each entry: "<usd>=<provider>/<model>"
+  cascadeCalls?: string[]; // each entry: "<int>=<provider>/<model>"
   failoverTo?: string; // "<provider>/<model>"
 };
 
@@ -85,9 +88,7 @@ export async function policySet(opts: PolicySetOptions): Promise<number> {
       console.log(`Set ${d.policy.id} policy for ${d.agent}:`);
       console.log(`  primary:  ${d.policy.primary.provider}/${d.policy.primary.model}`);
       for (const r of d.policy.cascade) {
-        console.log(
-          `  at ≥ $${r.triggerSpendDay.toFixed(2)}/day → ${r.fallback.provider}/${r.fallback.model}`,
-        );
+        console.log(`  ${formatRule(r)} → ${r.fallback.provider}/${r.fallback.model}`);
       }
       if (d.policy.failoverTo) {
         console.log(`  on error  → ${d.policy.failoverTo.provider}/${d.policy.failoverTo.model}`);
@@ -99,11 +100,23 @@ export async function policySet(opts: PolicySetOptions): Promise<number> {
 async function doPolicySet(opts: PolicySetOptions): Promise<PolicySetData> {
   const agentId = validateAgent(opts.agentId);
   const primary = parseModelSpec(opts.primary, "--primary");
-  const cascade: CostCascadeRule[] = opts.cascade.map((entry, i) =>
-    parseCascadeEntry(entry, `--at[${i}]`),
+
+  const spendRules = opts.cascade.map((entry, i) => parseSpendCascadeEntry(entry, `--at[${i}]`));
+  const callsRules = (opts.cascadeCalls ?? []).map((entry, i) =>
+    parseCallsCascadeEntry(entry, `--at-calls[${i}]`),
   );
-  // normalize: ascending trigger order
-  cascade.sort((a, b) => a.triggerSpendDay - b.triggerSpendDay);
+
+  // Stable order: spend rules ascending by trigger, then calls rules ascending.
+  // Mixed cascades evaluate spend rules first (preserves existing behavior for
+  // pure-spend policies); calls rules act as a backstop for sub2api windows.
+  spendRules.sort((a, b) => (a.triggerSpendDay ?? 0) - (b.triggerSpendDay ?? 0));
+  callsRules.sort((a, b) => (a.triggerCallsDay ?? 0) - (b.triggerCallsDay ?? 0));
+  const cascade: CostCascadeRule[] = [...spendRules, ...callsRules];
+
+  if (cascade.length === 0 && !opts.failoverTo) {
+    // Allowed: a policy with primary only is legal (acts as a static pin).
+  }
+
   const failoverTo = opts.failoverTo
     ? parseModelSpec(opts.failoverTo, "--failover-to")
     : undefined;
@@ -116,7 +129,12 @@ async function doPolicySet(opts: PolicySetOptions): Promise<PolicySetData> {
   await setPolicy(agentId, policy);
   return {
     agent: agentId,
-    policy: { id: policy.id, primary, cascade, failoverTo: failoverTo ?? null },
+    policy: {
+      id: policy.id,
+      primary,
+      cascade: cascade.map(toOutputRule),
+      failoverTo: failoverTo ?? null,
+    },
   };
 }
 
@@ -165,17 +183,8 @@ function parseModelSpec(s: string, argName: string): { provider: string; model: 
   return { provider: parsed.provider, model: parsed.model };
 }
 
-function parseCascadeEntry(entry: string, argName: string): CostCascadeRule {
-  const eq = entry.indexOf("=");
-  if (eq < 0) {
-    throw new ThomasError({
-      code: "E_INVALID_ARG",
-      message: `${argName} must be in '<usd>=<provider>/<model>' form (got '${entry}')`,
-      details: { arg: argName, value: entry },
-    });
-  }
-  const triggerStr = entry.slice(0, eq).trim();
-  const targetStr = entry.slice(eq + 1).trim();
+function parseSpendCascadeEntry(entry: string, argName: string): CostCascadeRule {
+  const { triggerStr, targetStr } = splitTriggerEntry(entry, argName, "<usd>");
   const trigger = Number.parseFloat(triggerStr);
   if (!Number.isFinite(trigger) || trigger < 0) {
     throw new ThomasError({
@@ -185,4 +194,51 @@ function parseCascadeEntry(entry: string, argName: string): CostCascadeRule {
     });
   }
   return { triggerSpendDay: trigger, fallback: parseModelSpec(targetStr, argName) };
+}
+
+function parseCallsCascadeEntry(entry: string, argName: string): CostCascadeRule {
+  const { triggerStr, targetStr } = splitTriggerEntry(entry, argName, "<int>");
+  const trigger = Number.parseInt(triggerStr, 10);
+  if (!Number.isInteger(trigger) || trigger < 1 || String(trigger) !== triggerStr.trim()) {
+    throw new ThomasError({
+      code: "E_INVALID_ARG",
+      message: `${argName}: trigger must be a positive integer (got '${triggerStr}')`,
+      details: { arg: argName, value: entry },
+    });
+  }
+  return { triggerCallsDay: trigger, fallback: parseModelSpec(targetStr, argName) };
+}
+
+function splitTriggerEntry(
+  entry: string,
+  argName: string,
+  triggerHint: string,
+): { triggerStr: string; targetStr: string } {
+  const eq = entry.indexOf("=");
+  if (eq < 0) {
+    throw new ThomasError({
+      code: "E_INVALID_ARG",
+      message: `${argName} must be in '${triggerHint}=<provider>/<model>' form (got '${entry}')`,
+      details: { arg: argName, value: entry },
+    });
+  }
+  return { triggerStr: entry.slice(0, eq).trim(), targetStr: entry.slice(eq + 1).trim() };
+}
+
+function toOutputRule(r: CostCascadeRule): OutputCostCascadeRule {
+  return {
+    triggerSpendDay: r.triggerSpendDay ?? null,
+    triggerCallsDay: r.triggerCallsDay ?? null,
+    fallback: r.fallback,
+  };
+}
+
+function formatRule(rule: OutputCostCascadeRule): string {
+  if (rule.triggerSpendDay !== null) {
+    return `at ≥ $${rule.triggerSpendDay.toFixed(2)}/day`;
+  }
+  if (rule.triggerCallsDay !== null) {
+    return `at ≥ ${rule.triggerCallsDay} call${rule.triggerCallsDay === 1 ? "" : "s"}/day`;
+  }
+  return "(invalid: no trigger)";
 }

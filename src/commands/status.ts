@@ -6,7 +6,8 @@ import { readAgents } from "../config/agents.js";
 import { readConfig } from "../config/config.js";
 import { readRoutes } from "../config/routes.js";
 import { getStatus } from "../daemon/lifecycle.js";
-import { decide, spendSinceStartOfDay } from "../policy/decide.js";
+import { getMeter } from "../metering/registry.js";
+import { decide } from "../policy/decide.js";
 import { readPolicies } from "../policy/store.js";
 
 const EMPTY_RECENT: AgentRecent = {
@@ -45,8 +46,9 @@ async function fetchStatusData(): Promise<StatusData> {
       let policySnapshot: { id: string; reason: string } | null = null;
       let spendDay: number | null = null;
       if (policy && conn) {
-        spendDay = await spendSinceStartOfDay(spec.id);
-        const decision = decide(policy, spendDay);
+        const usage = await getMeter(spec.id).usageInWindow(spec.id, "day");
+        spendDay = usage.spend;
+        const decision = decide(policy, usage);
         effective = decision.target;
         policySnapshot = { id: decision.policyId ?? policy.id, reason: decision.reason };
       }

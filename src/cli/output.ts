@@ -302,8 +302,13 @@ export type RecommendData = {
   }>;
 };
 
+// Exactly one of triggerSpendDay / triggerCallsDay is non-null on each rule
+// (validated at policy-set time). Spend rules gate on $/day; calls rules
+// gate on call count/day — needed for usage-based providers (subscription2api)
+// where dollar cost is unknown.
 export type CostCascadeRule = {
-  triggerSpendDay: number;
+  triggerSpendDay: number | null;
+  triggerCallsDay: number | null;
   fallback: ModelRef;
 };
 
@@ -316,7 +321,9 @@ export type PolicySnapshot = {
   failoverTo: ModelRef | null;
   // computed from runs.jsonl for "today" UTC; null when no priced run yet
   currentSpendDay: number | null;
-  // post-decision target after applying spend to cascade
+  // call count for "today" UTC — drives triggerCallsDay rules
+  currentCallsDay: number;
+  // post-decision target after applying usage to cascade
   currentEffective: ModelRef;
   currentReason: string;
 };

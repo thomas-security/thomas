@@ -37,7 +37,9 @@ Usage:
                                         --limit <N>      max records (default 20)
                                         --per-call       1 row per HTTP call (default groups by X-Thomas-Run-Id)
   thomas policy [--json]              Show configured cost-cascade policies + today's spend
-  thomas policy set <agent> --primary <prov/model> [--at <usd>=<prov/model>]...
+  thomas policy set <agent> --primary <prov/model>
+                                      [--at <usd>=<prov/model>]... (spend trigger, $/day)
+                                      [--at-calls <int>=<prov/model>]... (count trigger, calls/day)
                                       [--failover-to <prov/model>]
                                       Configure cost cascade + optional in-run failover
   thomas policy clear <agent>         Remove an agent's policy
@@ -352,6 +354,7 @@ async function runPolicy(args: string[], json: boolean): Promise<number> {
       options: {
         primary: { type: "string" },
         at: { type: "string", multiple: true },
+        "at-calls": { type: "string", multiple: true },
         "failover-to": { type: "string" },
       },
       allowPositionals: true,
@@ -359,7 +362,7 @@ async function runPolicy(args: string[], json: boolean): Promise<number> {
     const agentId = positionals[0];
     if (!agentId || !values.primary) {
       return usage(
-        "thomas policy set <agent> --primary <prov/model> [--at <usd>=<prov/model>]... [--failover-to <prov/model>]",
+        "thomas policy set <agent> --primary <prov/model> [--at <usd>=<prov/model>]... [--at-calls <int>=<prov/model>]... [--failover-to <prov/model>]",
       );
     }
     return policySet({
@@ -367,6 +370,7 @@ async function runPolicy(args: string[], json: boolean): Promise<number> {
       agentId,
       primary: values.primary,
       cascade: (values.at ?? []) as string[],
+      cascadeCalls: (values["at-calls"] ?? []) as string[],
       failoverTo: values["failover-to"],
     });
   }

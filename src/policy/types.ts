@@ -3,8 +3,14 @@
 
 import type { AgentId } from "../agents/types.js";
 
+// Exactly ONE of triggerSpendDay / triggerCallsDay must be set on each rule.
+// Validated at policy-set time. Spend triggers compare against today's
+// accumulated cost; calls triggers compare against today's call count. Calls
+// triggers exist for usage-based providers (subscription2api) where spend is
+// null and dollar gating is moot.
 export type CostCascadeRule = {
-  triggerSpendDay: number;
+  triggerSpendDay?: number;
+  triggerCallsDay?: number;
   fallback: { provider: string; model: string };
 };
 

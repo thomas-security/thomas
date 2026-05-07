@@ -4,11 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { policyClear, policySet, policyShow } from "../src/commands/policy.js";
-import { decide, spendSinceStartOfDay, startOfTodayUTC } from "../src/policy/decide.js";
+import type { Usage } from "../src/metering/types.js";
+import { windowStart } from "../src/metering/types.js";
+import { decide } from "../src/policy/decide.js";
 import { getPolicy, readPolicies, setPolicy } from "../src/policy/store.js";
 import type { CostCascadePolicy } from "../src/policy/types.js";
 import { appendRun } from "../src/runs/store.js";
 import { captureStdout } from "./_util.js";
+
+function usage(overrides: Partial<Usage> = {}): Usage {
+  return { calls: 0, inputTokens: 0, outputTokens: 0, spend: 0, ...overrides };
+}
 
 let dir: string;
 const ORIG = process.env.THOMAS_HOME;
@@ -34,29 +40,27 @@ const POLICY: CostCascadePolicy = {
 };
 
 describe("decide() — pure cascade evaluation", () => {
-  it("returns primary when spend below all triggers", () => {
-    const d = decide(POLICY, 0);
+  it("returns primary when usage below all triggers", () => {
+    const d = decide(POLICY, usage({ spend: 0 }));
     expect(d.target).toEqual({ provider: "anthropic", model: "claude-opus-4-7" });
     expect(d.policyId).toBe("cost-cascade");
   });
 
   it("returns first matching cascade rule by ascending trigger order", () => {
-    const d = decide(POLICY, 7);
+    const d = decide(POLICY, usage({ spend: 7 }));
     expect(d.target).toEqual({ provider: "anthropic", model: "claude-haiku-4-5" });
   });
 
-  it("returns later rule when spend crosses higher trigger", () => {
-    const d = decide(POLICY, 12);
-    // First rule (≥5) matches, but cascade is ordered by trigger ascending —
-    // so the LAST matching rule should win. Verify the implementation matches.
-    // Current impl returns first match → expect haiku, not deepseek.
-    // If you want highest-trigger win, change the impl + this test.
+  it("first matching rule wins even when later rules also match", () => {
+    const d = decide(POLICY, usage({ spend: 12 }));
+    // Cascade is sorted ascending by trigger; first hit (≥5) wins → haiku, not deepseek.
     expect(d.target.provider).toBe("anthropic");
+    expect(d.target.model).toBe("claude-haiku-4-5");
   });
 
   it("trigger of exactly the threshold counts as a hit", () => {
-    expect(decide(POLICY, 5).target.model).toBe("claude-haiku-4-5");
-    expect(decide(POLICY, 4.999).target.model).toBe("claude-opus-4-7");
+    expect(decide(POLICY, usage({ spend: 5 })).target.model).toBe("claude-haiku-4-5");
+    expect(decide(POLICY, usage({ spend: 4.999 })).target.model).toBe("claude-opus-4-7");
   });
 
   it("policy with empty cascade always returns primary", () => {
@@ -65,129 +69,48 @@ describe("decide() — pure cascade evaluation", () => {
       primary: POLICY.primary,
       cascade: [],
     };
-    expect(decide(empty, 9999).target).toEqual(POLICY.primary);
+    expect(decide(empty, usage({ spend: 9999 })).target).toEqual(POLICY.primary);
+  });
+
+  it("triggerCallsDay rule fires when calls reaches threshold", () => {
+    const policy: CostCascadePolicy = {
+      id: "cost-cascade",
+      primary: { provider: "openai", model: "gpt-5.5" },
+      cascade: [
+        {
+          triggerCallsDay: 2,
+          fallback: { provider: "vllm", model: "xiangxin-2xl-chat" },
+        },
+      ],
+    };
+    expect(decide(policy, usage({ calls: 1 })).target.model).toBe("gpt-5.5");
+    expect(decide(policy, usage({ calls: 2 })).target.model).toBe("xiangxin-2xl-chat");
+    expect(decide(policy, usage({ calls: 99 })).target.model).toBe("xiangxin-2xl-chat");
+  });
+
+  it("spend rule is inert when usage.spend is null; calls rule still fires", () => {
+    const policy: CostCascadePolicy = {
+      id: "cost-cascade",
+      primary: { provider: "openai", model: "gpt-5.5" },
+      cascade: [
+        // spend rule comes first; with spend null it must skip, not throw
+        { triggerSpendDay: 5, fallback: { provider: "deepseek", model: "deepseek-chat" } },
+        { triggerCallsDay: 3, fallback: { provider: "vllm", model: "xiangxin-2xl-chat" } },
+      ],
+    };
+    const d = decide(policy, { calls: 4, inputTokens: 0, outputTokens: 0, spend: null });
+    expect(d.target.model).toBe("xiangxin-2xl-chat");
+    expect(d.reason).toContain("calls 4/day");
+  });
+
+  it("primary-reason mentions both spend and calls when present", () => {
+    const d = decide(POLICY, usage({ spend: 1.23, calls: 4 }));
+    expect(d.reason).toContain("$1.2300/day");
+    expect(d.reason).toContain("calls 4/day");
   });
 });
 
-describe("spendSinceStartOfDay", () => {
-  it("returns 0 when no runs", async () => {
-    expect(await spendSinceStartOfDay("claude-code")).toBe(0);
-  });
-
-  it("sums today's runs only, excluding null costs", async () => {
-    const today = startOfTodayUTC();
-    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
-    await appendRun({
-      runId: "today1",
-      agent: "claude-code",
-      startedAt: new Date(today.getTime() + 60_000).toISOString(),
-      endedAt: new Date(today.getTime() + 70_000).toISOString(),
-      durationMs: 10_000,
-      status: "ok",
-      inboundProtocol: "anthropic",
-      outboundProvider: "anthropic",
-      outboundModel: "claude-opus-4-7",
-      inputTokens: 1000,
-      outputTokens: 1000,
-      cost: 1.5,
-      streamed: false,
-      httpStatus: 200,
-      errorMessage: null,
-    });
-    await appendRun({
-      runId: "today2",
-      agent: "claude-code",
-      startedAt: new Date(today.getTime() + 120_000).toISOString(),
-      endedAt: new Date(today.getTime() + 130_000).toISOString(),
-      durationMs: 10_000,
-      status: "ok",
-      inboundProtocol: "anthropic",
-      outboundProvider: "anthropic",
-      outboundModel: "claude-opus-4-7",
-      inputTokens: 100,
-      outputTokens: 100,
-      cost: 0.75,
-      streamed: false,
-      httpStatus: 200,
-      errorMessage: null,
-    });
-    await appendRun({
-      runId: "yesterday",
-      agent: "claude-code",
-      startedAt: yesterday.toISOString(),
-      endedAt: yesterday.toISOString(),
-      durationMs: 0,
-      status: "ok",
-      inboundProtocol: "anthropic",
-      outboundProvider: "anthropic",
-      outboundModel: "claude-opus-4-7",
-      inputTokens: 0,
-      outputTokens: 0,
-      cost: 99,
-      streamed: false,
-      httpStatus: 200,
-      errorMessage: null,
-    });
-    await appendRun({
-      runId: "todayNullCost",
-      agent: "claude-code",
-      startedAt: new Date(today.getTime() + 60_000).toISOString(),
-      endedAt: new Date(today.getTime() + 60_000).toISOString(),
-      durationMs: 0,
-      status: "ok",
-      inboundProtocol: "openai",
-      outboundProvider: "openrouter",
-      outboundModel: "fake/model",
-      inputTokens: 10,
-      outputTokens: 10,
-      cost: null,
-      streamed: false,
-      httpStatus: 200,
-      errorMessage: null,
-    });
-    expect(await spendSinceStartOfDay("claude-code")).toBeCloseTo(2.25, 6);
-  });
-
-  it("filters by agent", async () => {
-    const today = startOfTodayUTC();
-    await appendRun({
-      runId: "1",
-      agent: "claude-code",
-      startedAt: new Date(today.getTime() + 60_000).toISOString(),
-      endedAt: new Date(today.getTime() + 60_000).toISOString(),
-      durationMs: 0,
-      status: "ok",
-      inboundProtocol: "anthropic",
-      outboundProvider: "anthropic",
-      outboundModel: "claude-opus-4-7",
-      inputTokens: 0,
-      outputTokens: 0,
-      cost: 5,
-      streamed: false,
-      httpStatus: 200,
-      errorMessage: null,
-    });
-    await appendRun({
-      runId: "2",
-      agent: "openclaw",
-      startedAt: new Date(today.getTime() + 60_000).toISOString(),
-      endedAt: new Date(today.getTime() + 60_000).toISOString(),
-      durationMs: 0,
-      status: "ok",
-      inboundProtocol: "openai",
-      outboundProvider: "deepseek",
-      outboundModel: "deepseek-chat",
-      inputTokens: 0,
-      outputTokens: 0,
-      cost: 3,
-      streamed: false,
-      httpStatus: 200,
-      errorMessage: null,
-    });
-    expect(await spendSinceStartOfDay("claude-code")).toBe(5);
-    expect(await spendSinceStartOfDay("openclaw")).toBe(3);
-  });
-});
+// (Spend / call aggregation behavior covered in tests/metering.test.ts.)
 
 describe("policy store", () => {
   it("set + get round-trip", async () => {
@@ -282,9 +205,9 @@ describe("thomas policy commands (--json)", () => {
     expect(JSON.parse(out).data.removed).toBe(false);
   });
 
-  it("show populates currentSpendDay + currentEffective from runs", async () => {
+  it("show populates currentSpendDay + currentCallsDay + currentEffective from runs", async () => {
     await setPolicy("claude-code", POLICY);
-    const today = startOfTodayUTC();
+    const today = windowStart("day");
     await appendRun({
       runId: "1",
       agent: "claude-code",
@@ -306,8 +229,71 @@ describe("thomas policy commands (--json)", () => {
     const snap = JSON.parse(out).data.policies[0];
     expect(snap.agent).toBe("claude-code");
     expect(snap.currentSpendDay).toBe(7);
+    expect(snap.currentCallsDay).toBe(1);
     // 7 ≥ first trigger (5), so cascades to haiku
     expect(snap.currentEffective).toEqual({ provider: "anthropic", model: "claude-haiku-4-5" });
     expect(snap.currentReason).toContain("≥ trigger");
+  });
+
+  it("set --at-calls stores a count-trigger rule and decide() switches at threshold", async () => {
+    const { result, out } = await captureStdout(() =>
+      policySet({
+        json: true,
+        agentId: "openclaw",
+        primary: "openai/gpt-5.5",
+        cascade: [],
+        cascadeCalls: ["2=vllm/xiangxin-2xl-chat"],
+      }),
+    );
+    expect(result).toBe(0);
+    const data = JSON.parse(out).data;
+    expect(data.policy.cascade).toEqual([
+      {
+        triggerSpendDay: null,
+        triggerCallsDay: 2,
+        fallback: { provider: "vllm", model: "xiangxin-2xl-chat" },
+      },
+    ]);
+
+    // Add 2 runs → cascade fires
+    const today = windowStart("day");
+    for (const id of ["a", "b"]) {
+      await appendRun({
+        runId: id,
+        agent: "openclaw",
+        startedAt: new Date(today.getTime() + 60_000).toISOString(),
+        endedAt: new Date(today.getTime() + 60_000).toISOString(),
+        durationMs: 0,
+        status: "ok",
+        inboundProtocol: "openai",
+        outboundProvider: "openai",
+        outboundModel: "gpt-5.5",
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: null,
+        streamed: false,
+        httpStatus: 200,
+        errorMessage: null,
+      });
+    }
+    const { out: showOut } = await captureStdout(() => policyShow({ json: true }));
+    const snap = JSON.parse(showOut).data.policies[0];
+    expect(snap.currentCallsDay).toBe(2);
+    expect(snap.currentEffective).toEqual({ provider: "vllm", model: "xiangxin-2xl-chat" });
+    expect(snap.currentReason).toContain("calls 2/day");
+  });
+
+  it("set --at-calls rejects non-positive integer triggers", async () => {
+    const { result, out } = await captureStdout(() =>
+      policySet({
+        json: true,
+        agentId: "openclaw",
+        primary: "openai/gpt-5.5",
+        cascade: [],
+        cascadeCalls: ["0=vllm/xiangxin-2xl-chat"],
+      }),
+    );
+    expect(result).toBe(1);
+    expect(JSON.parse(out).error.code).toBe("E_INVALID_ARG");
   });
 });

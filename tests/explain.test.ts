@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { explain } from "../src/commands/explain.js";
 import { recordConnect } from "../src/config/agents.js";
 import { setRoute } from "../src/config/routes.js";
-import { startOfTodayUTC } from "../src/policy/decide.js";
+import { windowStart } from "../src/metering/types.js";
 import { setPolicy } from "../src/policy/store.js";
 import { appendRun } from "../src/runs/store.js";
 import type { RunRecord } from "../src/runs/types.js";
@@ -141,8 +141,8 @@ describe("explain --agent", () => {
     await appendRun(
       record({
         runId: "today-1",
-        startedAt: new Date(startOfTodayUTC().getTime() + 60_000).toISOString(),
-        endedAt: new Date(startOfTodayUTC().getTime() + 70_000).toISOString(),
+        startedAt: new Date(windowStart("day").getTime() + 60_000).toISOString(),
+        endedAt: new Date(windowStart("day").getTime() + 70_000).toISOString(),
         cost: 7.0,
       }),
     );

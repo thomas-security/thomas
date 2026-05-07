@@ -4,7 +4,9 @@ import { ThomasError, runJson } from "../cli/json.js";
 import type { ExplainData } from "../cli/output.js";
 import { readAgents } from "../config/agents.js";
 import { getRoute } from "../config/routes.js";
-import { decide, spendSinceStartOfDay, startOfTodayUTC } from "../policy/decide.js";
+import { getMeter } from "../metering/registry.js";
+import { windowStart } from "../metering/types.js";
+import { decide } from "../policy/decide.js";
 import { getPolicy } from "../policy/store.js";
 import { findRecordsForRun, readRuns } from "../runs/store.js";
 import type { RunRecord } from "../runs/types.js";
@@ -160,12 +162,12 @@ function runNarrative(r: RunRecord): string {
 
 async function explainAgent(agentId: string): Promise<ExplainData> {
   const id = validateAgent(agentId);
-  const [agentsState, route, policy, todayRuns, spendDay] = await Promise.all([
+  const [agentsState, route, policy, todayRuns, usage] = await Promise.all([
     readAgents(),
     getRoute(id),
     getPolicy(id),
-    readRuns({ agent: id, since: startOfTodayUTC() }),
-    spendSinceStartOfDay(id),
+    readRuns({ agent: id, since: windowStart("day") }),
+    getMeter(id).usageInWindow(id, "day"),
   ]);
 
   const conn = agentsState.connected[id];
@@ -197,7 +199,7 @@ async function explainAgent(agentId: string): Promise<ExplainData> {
       detail: `cost-cascade policy active: primary ${policy.primary.provider}/${policy.primary.model}, ${policy.cascade.length} cascade rule(s)`,
       at: null,
     });
-    const d = decide(policy, spendDay);
+    const d = decide(policy, usage);
     effective = d.target;
     policyReason = d.reason;
     facts.push({ kind: "cascade", detail: `${d.reason} → effective ${d.target.provider}/${d.target.model}`, at: null });
@@ -205,9 +207,10 @@ async function explainAgent(agentId: string): Promise<ExplainData> {
 
   const okCount = todayRuns.filter((r) => r.status === "ok").length;
   const errCount = todayRuns.filter((r) => r.status === "error").length;
+  const spendDetail = usage.spend !== null ? `$${usage.spend.toFixed(4)}` : "unknown $ (some runs lacked pricing)";
   facts.push({
     kind: "cost",
-    detail: `today: ${todayRuns.length} run(s) (${okCount} ok, ${errCount} error), spent $${spendDay.toFixed(4)} on priced runs`,
+    detail: `today: ${todayRuns.length} run(s) (${okCount} ok, ${errCount} error), spent ${spendDetail} on priced runs`,
     at: null,
   });
 
@@ -222,7 +225,7 @@ async function explainAgent(agentId: string): Promise<ExplainData> {
 
   return {
     subject: { type: "agent", id },
-    narrative: agentNarrative({ id, route, policy, effective, policyReason, todayRuns, spendDay }),
+    narrative: agentNarrative({ id, route, policy, effective, policyReason, todayRuns, spendDay: usage.spend }),
     facts,
   };
 }
@@ -230,11 +233,11 @@ async function explainAgent(agentId: string): Promise<ExplainData> {
 function agentNarrative(p: {
   id: AgentId;
   route: { provider: string; model: string } | undefined;
-  policy: { primary: { provider: string; model: string }; cascade: { triggerSpendDay: number }[] } | undefined;
+  policy: { primary: { provider: string; model: string }; cascade: unknown[] } | undefined;
   effective: { provider: string; model: string } | null;
   policyReason: string | null;
   todayRuns: RunRecord[];
-  spendDay: number;
+  spendDay: number | null;
 }): string {
   const parts: string[] = [];
   parts.push(`${p.id} is connected through thomas.`);
@@ -257,7 +260,8 @@ function agentNarrative(p: {
   if (p.todayRuns.length === 0) {
     parts.push("No runs recorded today.");
   } else {
-    parts.push(`Today: ${p.todayRuns.length} run(s), ${okN} ok, ${errN} error, spent $${p.spendDay.toFixed(4)}.`);
+    const spent = p.spendDay !== null ? `spent $${p.spendDay.toFixed(4)}` : "spend unknown (some runs lacked pricing)";
+    parts.push(`Today: ${p.todayRuns.length} run(s), ${okN} ok, ${errN} error, ${spent}.`);
   }
   return parts.join(" ");
 }
