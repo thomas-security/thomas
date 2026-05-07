@@ -39,6 +39,12 @@ export const paths = {
   get runs() {
     return join(thomasDir(), "runs.jsonl");
   },
+  // Records whose cloud uplink (POST /v1/runs) failed. `thomas cloud sync-runs`
+  // drains this file by re-uploading in batches; the server-side endpoint is
+  // idempotent on (device_id, run_id, started_at) so replays are safe.
+  get runsPending() {
+    return join(thomasDir(), "runs-pending.jsonl");
+  },
   get policies() {
     return join(thomasDir(), "policies.json");
   },

@@ -2,6 +2,7 @@ import { parseArgs } from "node:util";
 import { cloudLogin } from "./commands/cloud/login.js";
 import { cloudLogout } from "./commands/cloud/logout.js";
 import { cloudSync } from "./commands/cloud/sync.js";
+import { cloudSyncRuns } from "./commands/cloud/sync-runs.js";
 import { cloudWhoami } from "./commands/cloud/whoami.js";
 import { connect } from "./commands/connect.js";
 import { daemonInstall, daemonStatus, daemonUninstall } from "./commands/daemon.js";
@@ -86,6 +87,7 @@ Usage:
   thomas cloud logout [--json]        Clear local cloud credential
   thomas cloud whoami [--json]        Show current cloud login (workspace, device, last sync)
   thomas cloud sync [--json]          Pull policy / bundle / binding snapshot from thomas-cloud
+  thomas cloud sync-runs [--json]     Drain runs-pending.jsonl by re-uploading runs whose POST failed
 
 Add --json to any command for stable, machine-readable output (see SKILL.md).
 
@@ -271,8 +273,10 @@ async function runCloud(args: string[], json: boolean): Promise<number> {
       return cloudWhoami({ json });
     case "sync":
       return cloudSync({ json });
+    case "sync-runs":
+      return cloudSyncRuns({ json });
     default:
-      console.error("Usage: thomas cloud <login|logout|whoami|sync>");
+      console.error("Usage: thomas cloud <login|logout|whoami|sync|sync-runs>");
       return 1;
   }
 }

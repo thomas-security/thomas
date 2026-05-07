@@ -417,6 +417,7 @@ export type CommandOutput = {
   // thomas cloud
   "cloud.whoami": CloudWhoamiData;
   "cloud.sync": CloudSyncData;
+  "cloud.sync-runs": CloudSyncRunsData;
   "cloud.logout": CloudLogoutData;
 };
 
@@ -441,6 +442,18 @@ export type CloudSyncData = {
 
 export type CloudLogoutData = {
   wasLoggedIn: boolean;
+};
+
+export type CloudSyncRunsData = {
+  // Total records pulled from runs-pending.jsonl this invocation.
+  scanned: number;
+  // Server accepted (newly inserted on cloud).
+  uploaded: number;
+  // Server already had these — idempotent re-uploads count here.
+  duplicates: number;
+  // Records left in runs-pending.jsonl after this run (failed batches +
+  // anything queued mid-drain).
+  remaining: number;
 };
 
 export type CommandName = keyof CommandOutput;

@@ -316,7 +316,19 @@ Cloud-pulled policies support the same shapes as local ones — including `trigg
 
 Once the user has logged in, every `appendRun` (one per outbound model call) is **also** posted to `/v1/runs` on thomas-cloud as a fire-and-forget side effect. This populates the cloud's per-workspace dashboard at `https://thomas.trustunknown.com/dashboard/agents` (or your `THOMAS_CLOUD_BASE_URL`). The CLI is unchanged — `thomas runs` / `thomas status` / `thomas explain` still read from the local `~/.thomas/runs.jsonl` and remain authoritative.
 
-**Failures are silent.** A network blip or a 5xx from cloud drops the upload — local jsonl is untouched. There is no automatic backfill in v1; the user can lose dashboard rows but never lose source-of-truth data. If they ask "why is my cloud dashboard missing runs", direct them to verify `thomas cloud whoami --json` shows `loggedIn: true`, and check connectivity to `THOMAS_CLOUD_BASE_URL`.
+**Failures persist to a queue, not silently drop.** When a POST fails (network blip, 5xx, auth error), the record is appended to `~/.thomas/runs-pending.jsonl` instead. The user (or a scheduled job) drains this with:
+
+```sh
+thomas cloud sync-runs --json
+```
+
+Returns `{ scanned, uploaded, duplicates, remaining }`. The endpoint is server-side idempotent (deduped on `device_id + run_id + started_at`), so replays are safe. Returns `E_CLOUD_NOT_LOGGED_IN` if the user hasn't logged in. If the user asks "why is my cloud dashboard missing runs", do this:
+
+1. `thomas cloud whoami --json` — confirm `loggedIn: true`
+2. `thomas cloud sync-runs --json` — drain any queued failures
+3. Inspect `data.remaining > 0` after drain → cloud is still rejecting; check connectivity / token validity
+
+Local `runs.jsonl` is unaffected by any of this — `thomas runs` / `explain` always reflect ground truth regardless of cloud state.
 
 Cloud also exposes `GET /v1/agents` (24h aggregates across all the user's devices) and `GET /v1/runs`. Those are accessed via the web dashboard, not the thomas CLI — there's no `thomas cloud agents` verb. Tell the user to open the dashboard for cross-device views; use the local CLI for single-device, real-time answers.
 
