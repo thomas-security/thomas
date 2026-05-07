@@ -11,31 +11,13 @@
 
 import { cloudPostJson } from "./client.js";
 import { defaultBaseUrl, readIdentity } from "./identity.js";
+import type {
+  SchemaRunBatchRequest,
+  SchemaRunBatchResponse,
+  SchemaRunIn,
+} from "./openapi-types.js";
 import { appendPending } from "./runs-pending.js";
 import type { RunRecord } from "../runs/types.js";
-
-type WireRunIn = {
-  runId: string;
-  agentId: string;
-  startedAt: string;
-  endedAt: string;
-  durationMs: number;
-  status: "ok" | "error";
-  inboundProtocol: "anthropic" | "openai";
-  outboundProvider: string;
-  outboundModel: string;
-  inputTokens: number;
-  outputTokens: number;
-  cost: number | null;
-  streamed: boolean;
-  httpStatus: number;
-  errorMessage: string | null;
-  failovers: number;
-  failoverNote: string | null;
-};
-
-type WireRunBatchRequest = { runs: WireRunIn[] };
-type WireRunBatchResponse = { accepted: number; duplicates: number };
 
 /**
  * Hand a freshly-appended record to the cloud uplink. Returns immediately;
@@ -57,8 +39,8 @@ async function uploadOne(record: RunRecord): Promise<void> {
   const id = await readIdentity();
   if (!id) return; // not logged in — no-op (don't enqueue either; no destination)
   const baseUrl = id.baseUrl ?? defaultBaseUrl();
-  const body: WireRunBatchRequest = { runs: [toWireRun(record)] };
-  await cloudPostJson<WireRunBatchResponse>("/v1/runs", body, {
+  const body: SchemaRunBatchRequest = { runs: [toWireRun(record)] };
+  await cloudPostJson<SchemaRunBatchResponse>("/v1/runs", body, {
     baseUrl,
     deviceToken: id.deviceToken,
     timeoutMs: 5_000,
@@ -67,15 +49,17 @@ async function uploadOne(record: RunRecord): Promise<void> {
 
 /** Upload a batch directly — used by `thomas cloud sync-runs`. Throws on
  *  error so the caller can decide which records to re-queue. */
-export async function uploadBatch(records: RunRecord[]): Promise<{ accepted: number; duplicates: number }> {
+export async function uploadBatch(
+  records: RunRecord[],
+): Promise<SchemaRunBatchResponse> {
   if (records.length === 0) return { accepted: 0, duplicates: 0 };
   const id = await readIdentity();
   if (!id) {
     throw new Error("not logged in to thomas-cloud");
   }
   const baseUrl = id.baseUrl ?? defaultBaseUrl();
-  const body: WireRunBatchRequest = { runs: records.map(toWireRun) };
-  const resp = await cloudPostJson<WireRunBatchResponse>("/v1/runs", body, {
+  const body: SchemaRunBatchRequest = { runs: records.map(toWireRun) };
+  const resp = await cloudPostJson<SchemaRunBatchResponse>("/v1/runs", body, {
     baseUrl,
     deviceToken: id.deviceToken,
     timeoutMs: 30_000,
@@ -83,7 +67,7 @@ export async function uploadBatch(records: RunRecord[]): Promise<{ accepted: num
   return resp;
 }
 
-export function toWireRun(record: RunRecord): WireRunIn {
+export function toWireRun(record: RunRecord): SchemaRunIn {
   return {
     runId: record.runId,
     agentId: record.agent,
