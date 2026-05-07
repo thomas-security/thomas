@@ -57,7 +57,10 @@ Read `data.agents[]`:
 ### "Make [agent] use cheap model after spending $N/day on expensive one"
 
 ```sh
-thomas policy set <agent> --primary <prov/model> [--at <usd>=<prov/model>]... [--failover-to <prov/model>] --json
+thomas policy set <agent> --primary <prov/model> \
+  [--at <usd>=<prov/model>]...           # cost trigger ($/day)
+  [--at-calls <int>=<prov/model>]...     # count trigger (calls/day)
+  [--failover-to <prov/model>] --json
 ```
 
 Example: claude-code uses Opus normally; switches to Haiku once today's spend ≥ $5; switches to DeepSeek once ≥ $10; AND if any upstream returns a retryable error (5xx/429/timeout), retry on OpenRouter:
@@ -70,13 +73,34 @@ thomas policy set claude-code \
   --failover-to openrouter/anthropic/claude-opus-4 --json
 ```
 
-`--at` is for **cost** (cascade by daily spend). `--failover-to` is for **reliability** (one-shot retry on transient errors). They're independent — set either or both.
+Three independent dials, set any combination:
 
-The proxy applies this on every request: actual model used = `effective` in `thomas status --json` (not `route`). `data.policies[].currentSpendDay` shows today's spend; `currentEffective` shows what's running right now; `currentReason` explains the decision in one line. When a failover fires, the run record will have `failovers: 1` and a `failoverNote` explaining what happened — visible via `thomas explain --run <id>`.
+- `--at` — **cost cascade** (gate on $/day). Spend is computed from `runs.jsonl` per UTC day.
+- `--at-calls` — **count cascade** (gate on calls/day). Use this when spend is the wrong axis: subscription-billed providers (sub2api, ChatGPT/Claude.ai cookies) don't expose token cost, and "use this model twice then switch" is a meaningful policy regardless of pricing. Trigger is a positive integer.
+- `--failover-to` — **reliability** (one-shot retry on transient errors).
+
+Each cascade rule must set **exactly one** trigger (spend OR calls, not both). Mixed cascades evaluate spend rules first (in ascending $ order), then calls rules (in ascending count order); first match wins.
+
+Example mixing both: openclaw on a sub2api endpoint where you want at most 2 calls/day on the premium model before switching:
+
+```sh
+thomas policy set openclaw \
+  --primary openai/gpt-5.5 \
+  --at-calls 2=vllm/xiangxin-2xl-chat --json
+```
+
+The proxy applies the policy on every request: actual model used = `effective` in `thomas status --json` (not `route`). `data.policies[]` has:
+
+- `currentSpendDay` — today's $ (null when any in-window run is unpriced)
+- `currentCallsDay` — today's call count (always a number)
+- `currentEffective` — provider/model running right now
+- `currentReason` — one-line explanation, e.g. `"calls 4/day ≥ trigger 2"` or `"spend $5.23/day ≥ trigger $5.00"`
+
+When a failover fires, the run record will have `failovers: 1` and a `failoverNote` explaining what happened — visible via `thomas explain --run <id>`.
 
 To inspect: `thomas policy --json`. To remove: `thomas policy clear <agent> --json`.
 
-Cost is computed from `runs.jsonl` per UTC day. Models without a price entry contribute nothing — confirm pricing exists for the cascade targets via `runs --json` (records will have `spend: null` if not).
+Confirm pricing exists for spend-cascade targets via `runs --json` (records will have `spend: null` if not). Count-cascade rules don't need pricing — they fire purely on call volume.
 
 ### "What's a good model setup for [agent] under $N/day?"
 
@@ -285,6 +309,16 @@ The local proxy's policy decision pipeline reads from this cache **before** the 
 3. route fallback (`thomas route ...`)
 
 So a centrally-managed policy on thomas-cloud automatically takes effect once the user logs in + syncs; offline / pre-login users keep getting their local policies unchanged.
+
+Cloud-pulled policies support the same shapes as local ones — including `triggerCallsDay` (count-cascade) — so a cascade authored in the dashboard behaves identically to one set via `thomas policy set --at-calls`.
+
+### Telemetry uplink (after `cloud login`)
+
+Once the user has logged in, every `appendRun` (one per outbound model call) is **also** posted to `/v1/runs` on thomas-cloud as a fire-and-forget side effect. This populates the cloud's per-workspace dashboard at `https://thomas.trustunknown.com/dashboard/agents` (or your `THOMAS_CLOUD_BASE_URL`). The CLI is unchanged — `thomas runs` / `thomas status` / `thomas explain` still read from the local `~/.thomas/runs.jsonl` and remain authoritative.
+
+**Failures are silent.** A network blip or a 5xx from cloud drops the upload — local jsonl is untouched. There is no automatic backfill in v1; the user can lose dashboard rows but never lose source-of-truth data. If they ask "why is my cloud dashboard missing runs", direct them to verify `thomas cloud whoami --json` shows `loggedIn: true`, and check connectivity to `THOMAS_CLOUD_BASE_URL`.
+
+Cloud also exposes `GET /v1/agents` (24h aggregates across all the user's devices) and `GET /v1/runs`. Those are accessed via the web dashboard, not the thomas CLI — there's no `thomas cloud agents` verb. Tell the user to open the dashboard for cross-device views; use the local CLI for single-device, real-time answers.
 
 ### "Sign out of cloud"
 
