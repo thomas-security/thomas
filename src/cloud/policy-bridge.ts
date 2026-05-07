@@ -24,8 +24,11 @@ import { readCache } from "./cache.js";
 
 type WireModelRef = { providerId: string; model: string };
 
+// Exactly one of triggerSpendDayUsd / triggerCallsDay is set per step (the
+// cloud schema validates this on write). Mirrors apps/api/app/schemas/policy.py.
 type WireCascadeStep = {
-  triggerSpendDayUsd: number;
+  triggerSpendDayUsd?: number;
+  triggerCallsDay?: number;
   fallback: WireModelRef;
 };
 
@@ -110,13 +113,19 @@ function staticAsPolicy(target: WireModelRef): PolicyConfig {
 }
 
 /** Convert a cloud PolicySpec (camelCase wire) to local PolicyConfig (legacy
- *  field names). Cascade is already sorted ascending on the cloud side. */
+ *  field names). Cascade is already sorted on the cloud side: spend rules
+ *  ascending by USD, then calls rules ascending by count. */
 function wireToPolicyConfig(spec: WirePolicySpec): PolicyConfig {
   return {
     id: "cost-cascade",
     primary: { provider: spec.primary.providerId, model: spec.primary.model },
     cascade: (spec.cascade ?? []).map((step) => ({
-      triggerSpendDay: step.triggerSpendDayUsd,
+      ...(step.triggerSpendDayUsd !== undefined
+        ? { triggerSpendDay: step.triggerSpendDayUsd }
+        : {}),
+      ...(step.triggerCallsDay !== undefined
+        ? { triggerCallsDay: step.triggerCallsDay }
+        : {}),
       fallback: { provider: step.fallback.providerId, model: step.fallback.model },
     })),
     ...(spec.failoverTo

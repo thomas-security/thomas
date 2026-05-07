@@ -17,11 +17,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { writeCache } from "../src/cloud/cache.js";
+import type { CloudSnapshot } from "../src/cloud/types.js";
+import { windowStart } from "../src/metering/types.js";
 import { decideForAgent } from "../src/policy/decide.js";
 import { setPolicy } from "../src/policy/store.js";
 import type { PolicyConfig } from "../src/policy/types.js";
-import { writeCache } from "../src/cloud/cache.js";
-import type { CloudSnapshot } from "../src/cloud/types.js";
+import { appendRun } from "../src/runs/store.js";
 
 let dir: string;
 const ORIG_THOMAS_HOME = process.env.THOMAS_HOME;
@@ -120,6 +122,72 @@ describe("decideForAgent — cloud cache integration", () => {
     const cold = await decideForAgent("claude-code", FALLBACK);
     expect(cold.target.model).toBe("claude-opus-4-7");
     expect(cold.source).toBe("cloud");
+  });
+
+  it("applies cloud policy count-cascade based on today's call count", async () => {
+    await writeCache(
+      snapshot({
+        policies: [
+          {
+            id: "01POLICY_CALLS_ULID000000000",
+            name: "GPT then xiangxin after 2 calls",
+            enabled: true,
+            spec: {
+              schemaVersion: 1,
+              primary: { providerId: "openai", model: "gpt-5.5" },
+              cascade: [
+                {
+                  triggerCallsDay: 2,
+                  fallback: { providerId: "vllm", model: "xiangxin-2xl-chat" },
+                },
+              ],
+            },
+          },
+        ],
+        bindings: [
+          {
+            agentId: "openclaw",
+            bindingKind: "policy",
+            targetId: "01POLICY_CALLS_ULID000000000",
+          },
+        ],
+      }) as unknown as CloudSnapshot,
+    );
+
+    const today = windowStart("day");
+    const stamp = (offsetSec: number) =>
+      new Date(today.getTime() + offsetSec * 1000).toISOString();
+
+    // 0 calls → primary
+    const cold = await decideForAgent("openclaw", FALLBACK);
+    expect(cold.target.model).toBe("gpt-5.5");
+    expect(cold.source).toBe("cloud");
+
+    // After 2 calls (no cost recorded — sub-style), cascade fires
+    for (const id of ["a", "b"]) {
+      await appendRun({
+        runId: id,
+        agent: "openclaw",
+        startedAt: stamp(60),
+        endedAt: stamp(60),
+        durationMs: 0,
+        status: "ok",
+        inboundProtocol: "openai",
+        outboundProvider: "openai",
+        outboundModel: "gpt-5.5",
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: null,
+        streamed: false,
+        httpStatus: 200,
+        errorMessage: null,
+        failovers: 0,
+        failoverNote: null,
+      });
+    }
+    const hot = await decideForAgent("openclaw", FALLBACK);
+    expect(hot.target).toEqual({ provider: "vllm", model: "xiangxin-2xl-chat" });
+    expect(hot.reason).toContain("calls 2/day");
   });
 
   it("falls back to local policy when cloud cache has no binding for this agent", async () => {
