@@ -187,6 +187,7 @@ tests/                         bun:test; bunfig.toml scopes to this dir
 - `shimEnv` values may use `${THOMAS_URL}` and `${THOMAS_TOKEN}` template tokens, resolved at install time. `extractCredentials` returns `ExtractedCredential[]` — pair a `Credential` with an optional `ProviderSpec` so connect can auto-register custom endpoints (e.g., the user's vllm baseUrl).
 - Adding a built-in provider: append entry to `BUILTIN` in `src/providers/registry.ts`. User-specific providers come in automatically when extracted from an agent (with `provider` attached on the `ExtractedCredential`), or via `thomas providers register`, persisted at `~/.thomas/providers.json`.
 - Hermes provider list lives in `src/providers/agents/hermes.generated.ts`. When upstream hermes adds/renames a provider, run `bun run sync:providers` to detect drift, then update by hand. Source of truth is hermes's `auth.py` `PROVIDER_REGISTRY` (canonical IDs and env aliases); `providers.py` `HERMES_OVERLAYS` uses display-layer renames that are aliases, not creds.
+- thomas-cloud wire types live in `src/cloud/openapi-types.ts`, generated from `src/cloud/openapi.json` (also checked in). When you change an `apps/api/app/schemas/*.py` Pydantic model in thomas-cloud, regenerate from a running server: `bun run gen:types` (defaults to `http://localhost:8000`, override with `THOMAS_CLOUD_BASE_URL`). The script writes the spec + the TS atomically; commit both. Importers (`src/cloud/policy-bridge.ts`, `src/cloud/runs-uplink.ts`) use the `Schema*` aliases — never hand-edit `openapi-types.ts`. Unlike `sync:providers` (drift detector only), `gen:types` *is* the source of truth for the wire — a stale `openapi-types.ts` means the client won't typecheck against the actual server contract.
 - Daemon service interface follows openclaw's `GatewayService` shape (`label`, `install`, `uninstall`, `status`, `start`, `stop`). Don't add per-platform branches outside `daemon/{launchd,systemd,scheduled-task}.ts`.
 - **JSON output is the agent contract.** Every read command takes `--json` and emits a stable, documented schema. Adding a read command without `--json` is incomplete. Schema changes are breaking changes — bump the schema's `version` field and update SKILL.md.
 - **SKILL.md updates ride alongside command changes.** New command, renamed flag, changed JSON shape → SKILL.md updated in the same PR. The skill is how agents drive thomas; out-of-date skill = silently broken UX for users who never touch the terminal.
@@ -208,11 +209,13 @@ tests/                         bun:test; bunfig.toml scopes to this dir
 
 ```sh
 bun install
-bun run dev      # bun src/cli.ts <args>     — fast iteration
-bun run build    # bun build → dist/cli.js   — single-file Node bundle, ~80 KB
-bun test         # bun test → tests/*.test.ts  (36 tests, ~100ms)
+bun run dev          # bun src/cli.ts <args>     — fast iteration
+bun run build        # bun build → dist/cli.js   — single-file Node bundle, ~80 KB
+bun test             # bun test → tests/*.test.ts  (36 tests, ~100ms)
 bunx tsc --noEmit
-npm pack         # produce installable tarball; verify with `tar tzf …`
+bun run gen:types    # regen src/cloud/openapi-types.ts from running thomas-cloud
+bun run sync:providers  # drift-check src/providers/agents/hermes.generated.ts
+npm pack             # produce installable tarball; verify with `tar tzf …`
 node dist/cli.js doctor   # smoke-test the bundle without `bun`
 ```
 
